@@ -7,7 +7,13 @@ type Props = {
   children: ReactNode;
 };
 
+const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim();
+
 export default function ClerkProviderClient({ children }: Props) {
   // Client-only wrapper avoids calling next/headers() on the server (Next 15 requires awaiting it).
-  return <ClerkProvider>{children}</ClerkProvider>;
+  if (!publishableKey) {
+    return <>{children}</>;
+  }
+
+  return <ClerkProvider publishableKey={publishableKey}>{children}</ClerkProvider>;
 }

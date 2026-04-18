@@ -7,7 +7,12 @@ const isProtectedRoute = createRouteMatcher([
   "/transaction(.*)",
 ]);
 
-const clerk = clerkMiddleware(async (auth, req) => {
+const clerkConfigured = Boolean(
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() &&
+    process.env.CLERK_SECRET_KEY?.trim()
+);
+
+const withClerk = clerkMiddleware(async (auth, req) => {
   const { userId } = await auth();
 
   if (!userId && isProtectedRoute(req)) {
@@ -18,7 +23,11 @@ const clerk = clerkMiddleware(async (auth, req) => {
   return NextResponse.next();
 });
 
-export default clerk;
+export default clerkConfigured
+  ? withClerk
+  : function middleware() {
+      return NextResponse.next();
+    };
 
 export const config = {
   matcher: [

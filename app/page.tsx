@@ -1,8 +1,23 @@
 import Link from 'next/link';
 import { auth } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
+import ClerkConfigNotice from '@/components/auth/ClerkConfigNotice';
+
+const clerkConfigured = Boolean(
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() &&
+    process.env.CLERK_SECRET_KEY?.trim()
+);
 
 export default async function HomePage() {
+  if (!clerkConfigured) {
+    return (
+      <ClerkConfigNotice
+        title="Authentication is not configured for this deployment."
+        detail="Once those environment variables are set, the sign-in flow and protected dashboard routes will work normally."
+      />
+    );
+  }
+
   const { userId } = await auth();
   if (userId) {
     redirect('/dashboard');
