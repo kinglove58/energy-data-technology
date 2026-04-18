@@ -13,11 +13,16 @@ if (!parsed.success) {
   console.warn('Invalid environment variables:', parsed.error.flatten().fieldErrors);
 }
 
+const fallbackEnv: z.infer<typeof envSchema> = {
+  NODE_ENV: 'development',
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: undefined,
+  CLERK_SECRET_KEY: undefined,
+  GEMINI_API_KEY: undefined,
+};
+
 export const env = parsed.success
   ? parsed.data
-  : {
-      NODE_ENV: 'development',
-    };
+  : fallbackEnv;
 
 export const requireClerkKeys = () => {
   if (!env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY || !env.CLERK_SECRET_KEY) {
