@@ -1,0 +1,7 @@
+{
+  "name": "Energy Data Network Assurance",
+  "description": "AI-powered revenue assurance and power theft detection platform for utility companies.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
