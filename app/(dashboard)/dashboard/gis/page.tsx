@@ -1,366 +1,303 @@
-'use client';
+"use client";
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLatestLiveResults } from "@/services/powergridHooks";
+import {
+  buildTheftCases,
+  formatKwh,
+  formatNaira,
+  formatPercent,
+  severityFromRisk,
+  type TheftCase,
+} from "@/lib/powergridAnalytics";
 
 declare global {
   interface Window {
     google: any;
-    initMap: () => void;
+    initEdnMap?: () => void;
   }
 }
 
-type LatLng = { lat: number; lng: number };
-
-type Incident = {
-  id: string;
-  title: string;
-  coords: LatLng;
-  severity: 'Critical' | 'High' | 'Medium' | 'Low';
-  loss: string;
-  status: string;
-  address: string;
-};
-
-const INCIDENTS: Incident[] = [
-  {
-    id: 'TC-9921',
-    title: 'TX-992 - Critical Loss',
-    coords: { lat: 6.5244, lng: 3.3792 }, // Lagos
-    severity: 'Critical',
-    loss: '$2,400/mo',
-    status: 'Active',
-    address: 'Block 4, Industrial Estate, Lagos',
-  },
-  {
-    id: 'TC-9924',
-    title: 'MT-9924 - Magnetic Tamper',
-    coords: { lat: 6.4654, lng: 3.4064 }, // Ikeja-ish
-    severity: 'High',
-    loss: '$450/mo',
-    status: 'Investigating',
-    address: '12 Maple Ave, Ikeja',
-  },
-  {
-    id: 'TC-9855',
-    title: 'DH-9855 - Direct Hook',
-    coords: { lat: 6.6018, lng: 3.3515 }, // Shomolu
-    severity: 'Critical',
-    loss: '$1,200/mo',
-    status: 'Scheduled',
-    address: 'Sector 7, Market Square',
-  },
-  {
-    id: 'TC-9802',
-    title: 'UA-9802 - Usage Anomaly',
-    coords: { lat: 6.4531, lng: 3.3958 }, // Surulere
-    severity: 'Medium',
-    loss: '$150/mo',
-    status: 'Pending',
-    address: '88 Oak St, Surulere',
-  },
-  {
-    id: 'TC-9750',
-    title: 'MB-9750 - Meter Bypass',
-    coords: { lat: 6.4418, lng: 3.3881 }, // Apapa
-    severity: 'High',
-    loss: '$890/mo',
-    status: 'Resolved',
-    address: 'Plot 44, New Extension',
-  },
-];
+const LAGOS_CENTER = { lat: 6.5244, lng: 3.3792 };
 
 export default function GisPage() {
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-  const mapRef = useRef<HTMLDivElement | null>(null);
-const mapInstance = useRef<any>(null);
-  const markerRef = useRef<any>(null);
-  const incidentMarkers = useRef<Record<string, any>>({});
-  const [isLoadingMap, setIsLoadingMap] = useState(false);
+  const latest = useLatestLiveResults();
+  const allCases = useMemo(() => buildTheftCases(latest.data, 80), [latest.data]);
+  const mappedCases = useMemo(
+    () => allCases.map(withFallbackCoordinates).slice(0, 40),
+    [allCases]
+  );
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<LatLng | null>(null);
-  const [inputs, setInputs] = useState<LatLng>({ lat: 6.5244, lng: 3.3792 }); // Lagos default
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const mapInstance = useRef<any>(null);
+  const markers = useRef<any[]>([]);
 
-  const [position, setPosition] = useState({ x: 0, y: 80 });
-
-  const [isDragging, setIsDragging] = useState(false);
-
-  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const selectedCase =
+    mappedCases.find((item) => item.id === selectedCaseId) || mappedCases[0];
 
   useEffect(() => {
     if (!apiKey) {
-      setMapError('Set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to load Google Maps.');
+      setMapError("Google Maps key is not configured.");
       return;
     }
-    if (typeof window === 'undefined') return;
-    if (window.google && mapRef.current && !mapInstance.current) {
-      initMap();
+    if (typeof window === "undefined") return;
+
+    window.initEdnMap = () => {
+      if (!mapRef.current || !window.google) return;
+      mapInstance.current = new window.google.maps.Map(mapRef.current, {
+        center: LAGOS_CENTER,
+        zoom: 11,
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: false,
+        styles: [
+          { elementType: "geometry", stylers: [{ color: "#0f1b14" }] },
+          { elementType: "labels.text.fill", stylers: [{ color: "#9db9a6" }] },
+          { elementType: "labels.text.stroke", stylers: [{ color: "#0f1b14" }] },
+          {
+            featureType: "road",
+            elementType: "geometry",
+            stylers: [{ color: "#1d2b1f" }],
+          },
+          {
+            featureType: "water",
+            elementType: "geometry",
+            stylers: [{ color: "#0b1110" }],
+          },
+        ],
+      });
+    };
+
+    if (window.google) {
+      window.initEdnMap();
       return;
     }
 
-    const existing = document.querySelector<HTMLScriptElement>('#google-maps-sdk');
-    if (existing) {
-      existing.addEventListener('load', initMap);
-      return () => existing.removeEventListener('load', initMap);
-    }
+    const existing = document.querySelector<HTMLScriptElement>("#google-maps-sdk");
+    if (existing) return;
 
-    setIsLoadingMap(true);
-    window.initMap = initMap;
-    const script = document.createElement('script');
-    script.id = 'google-maps-sdk';
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initMap`;
+    const script = document.createElement("script");
+    script.id = "google-maps-sdk";
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=initEdnMap`;
     script.async = true;
     script.defer = true;
-    script.onerror = () => {
-      setMapError('Failed to load Google Maps. Check API key and network.');
-      setIsLoadingMap(false);
-    };
+    script.onerror = () => setMapError("Google Maps failed to load.");
     document.head.appendChild(script);
-    return () => {
-      script.removeEventListener('load', initMap);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey]);
 
   useEffect(() => {
-    const updatePosition = () => {
-      setPosition({ x: window.innerWidth - 384 - 24, y: 80 });
-    };
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    return () => window.removeEventListener('resize', updatePosition);
-  }, []);
-
-  const initMap = () => {
-    if (!mapRef.current || !window.google) return;
-    const g = window.google;
-    mapInstance.current = new g.maps.Map(mapRef.current, {
-      center: inputs,
-      zoom: 13,
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
-      styles: [
-        { elementType: 'geometry', stylers: [{ color: '#0f1b14' }] },
-        { elementType: 'labels.text.fill', stylers: [{ color: '#9db9a6' }] },
-        { elementType: 'labels.text.stroke', stylers: [{ color: '#0f1b14' }] },
-        { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#203425' }] },
-        { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#17231a' }] },
-        { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#1d2b1f' }] },
-        { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0b1110' }] },
-      ],
-    });
-
-    mapInstance.current.addListener('click', (e: any) => {
-      const pos = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-      placeMarker(pos);
-    });
-
-    plotIncidents(g);
-    placeMarker(inputs);
-    setIsLoadingMap(false);
-  };
-
-  const plotIncidents = (g: any) => {
-    const bounds = new g.maps.LatLngBounds();
-    INCIDENTS.forEach((incident) => {
-      const marker = new g.maps.Marker({
-        position: incident.coords,
-        map: mapInstance.current,
-        title: incident.title,
-        icon: {
-          path: g.maps.SymbolPath.CIRCLE,
-          scale: 10,
-          fillColor: incident.severity === 'Critical' ? '#ef4444' : incident.severity === 'High' ? '#f59e0b' : '#11d452',
-          fillOpacity: 0.9,
-          strokeColor: '#ffffff',
-          strokeWeight: 2,
-        },
-      });
-      marker.addListener('click', () => {
-        mapInstance.current.panTo(incident.coords);
-        mapInstance.current.setZoom(14);
-        setSelected(incident.coords);
-      });
-      incidentMarkers.current[incident.id] = marker;
-      bounds.extend(incident.coords);
-    });
-    if (!bounds.isEmpty()) {
-      mapInstance.current.fitBounds(bounds, 60);
-    }
-  };
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    setIsDragging(true);
-    setDragOffset({ x: e.clientX - position.x, y: e.clientY - position.y });
-    e.preventDefault();
-  };
-
-  const handleMouseMove = (e: MouseEvent) => {
-    if (!isDragging) return;
-    setPosition({ x: e.clientX - dragOffset.x, y: e.clientY - dragOffset.y });
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
-
-  useEffect(() => {
-    if (isDragging) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-    }
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging]);
-
-  const placeMarker = (pos: LatLng) => {
     if (!window.google || !mapInstance.current) return;
-    const g = window.google;
-    if (!markerRef.current) {
-      markerRef.current = new g.maps.Marker({
-        position: pos,
+    markers.current.forEach((marker) => marker.setMap(null));
+    markers.current = [];
+
+    const bounds = new window.google.maps.LatLngBounds();
+    mappedCases.forEach((item) => {
+      if (!item.coords) return;
+      const marker = new window.google.maps.Marker({
+        position: item.coords,
         map: mapInstance.current,
-        draggable: true,
+        title: `${item.id} ${item.severity}`,
         icon: {
-          path: g.maps.SymbolPath.CIRCLE,
-          scale: 8,
-          fillColor: '#11d452',
-          fillOpacity: 1,
-          strokeColor: '#ffffff',
+          path: window.google.maps.SymbolPath.CIRCLE,
+          scale: item.severity === "Critical" ? 11 : 9,
+          fillColor: markerColor(item.severity),
+          fillOpacity: 0.92,
+          strokeColor: "#ffffff",
           strokeWeight: 2,
         },
       });
-      markerRef.current.addListener('dragend', (e: any) => {
-        const p = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-        setSelected(p);
-        setInputs(p);
+      marker.addListener("click", () => {
+        setSelectedCaseId(item.id);
+        mapInstance.current.panTo(item.coords);
+        mapInstance.current.setZoom(14);
       });
-    } else {
-      markerRef.current.setPosition(pos);
-    }
-    mapInstance.current.panTo(pos);
-    setSelected(pos);
-    setInputs(pos);
-  };
+      markers.current.push(marker);
+      bounds.extend(item.coords);
+    });
 
-  const handleCenter = () => {
-    if (!mapInstance.current) return;
-    const pos = { lat: inputs.lat, lng: inputs.lng };
-    mapInstance.current.panTo(pos);
-    placeMarker(pos);
-  };
-
-  const handleGeolocate = () => {
-    if (!navigator.geolocation) {
-      setMapError('Geolocation not available in this browser.');
-      return;
+    if (!bounds.isEmpty()) {
+      mapInstance.current.fitBounds(bounds, 64);
     }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        placeMarker(coords);
-      },
-      () => setMapError('Unable to fetch current location.'),
-      { enableHighAccuracy: true, timeout: 8000 },
-    );
-  };
+  }, [mappedCases]);
 
   return (
-    <div className="flex flex-col flex-1 h-full min-w-0 relative bg-background-dark">
-      <div className="absolute top-0 left-0 right-0 h-16 bg-gradient-to-b from-background-dark/90 to-transparent z-[1000] flex items-center px-6 gap-4 pointer-events-none">
-        <div className="pointer-events-auto flex-1 max-w-xl">
-          <div className="grid grid-cols-3 gap-2">
-            <input
-              type="number"
-              value={inputs.lat}
-              onChange={(e) => setInputs((p) => ({ ...p, lat: Number(e.target.value) }))}
-              className="col-span-1 bg-surface-dark/80 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder="Lat"
-            />
-            <input
-              type="number"
-              value={inputs.lng}
-              onChange={(e) => setInputs((p) => ({ ...p, lng: Number(e.target.value) }))}
-              className="col-span-1 bg-surface-dark/80 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder="Lng"
-            />
-            <button
-              onClick={handleCenter}
-              className="col-span-1 bg-primary text-black font-bold rounded-lg px-3 py-2 text-sm hover:bg-primary-hover transition-colors"
-            >
-              Go
-            </button>
-          </div>
-        </div>
-        <div className="pointer-events-auto flex gap-3 ml-auto">
-          <button
-            onClick={handleGeolocate}
-            className="px-3 py-2 rounded-lg border border-white/10 text-xs text-white bg-surface-dark/80 hover:bg-surface-dark transition-colors"
-          >
-            Use My Location
-          </button>
-        </div>
-      </div>
-
-      <div ref={mapRef} className="relative w-full h-full z-0 min-h-[600px]" />
-
-      <div className="absolute w-96 z-[1000] space-y-3" style={{ top: `${position.y}px`, left: `${position.x}px`, cursor: isDragging ? 'grabbing' : 'grab', resize: 'both', overflow: 'hidden', minWidth: '300px', minHeight: '200px' }}>
-        <div className="bg-surface-dark/95 backdrop-blur-md border border-white/10 rounded-xl shadow-2xl flex flex-col overflow-hidden">
-          <div className="p-4 border-b border-white/10 bg-gradient-to-r from-primary/10 to-transparent" onMouseDown={handleMouseDown}>
-            <div className="flex items-start justify-between mb-1">
-              <div>
-                <h2 className="text-lg font-bold text-white flex items-center gap-2">Incident Map</h2>
-                <p className="text-xs text-gray-400">Lat/Lng plotted from current cases</p>
-              </div>
-              <span className="px-2 py-1 rounded bg-primary/20 text-primary text-[10px] font-bold uppercase tracking-wider">
-                Google Maps
-              </span>
+    <main className="flex-1 overflow-y-auto bg-[#0b1110] p-6 lg:p-8">
+      <div className="mx-auto grid max-w-[1600px] grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <section className="flex min-w-0 flex-col gap-4">
+          <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+                GIS Intelligence
+              </p>
+              <h1 className="mt-2 text-2xl font-bold text-white">
+                Theft Hotspot Map
+              </h1>
+              <p className="mt-1 max-w-2xl text-sm text-text-muted">
+                High-risk service points, feeders, and transformer zones from
+                the latest grouped-analysis result.
+              </p>
             </div>
-          </div>
-          <div className="p-4 flex flex-col gap-2 max-h-[320px] overflow-y-auto">
-            {mapError && (
-              <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
-                {mapError}
+            <button
+              onClick={() => latest.refetch()}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-border-dark px-4 py-2 text-sm font-bold text-text-muted transition-colors hover:border-primary/50 hover:text-white"
+            >
+              <span className="material-symbols-outlined text-lg">refresh</span>
+              Refresh
+            </button>
+          </header>
+
+          <div className="relative min-h-[640px] overflow-hidden rounded-lg border border-border-dark bg-[#111813]">
+            {apiKey && !mapError ? (
+              <div ref={mapRef} className="absolute inset-0" />
+            ) : (
+              <div className="grid h-[640px] place-items-center px-6 text-center">
+                <div>
+                  <span className="material-symbols-outlined text-4xl text-primary">
+                    map
+                  </span>
+                  <p className="mt-3 text-lg font-bold text-white">
+                    GIS map unavailable
+                  </p>
+                  <p className="mt-1 text-sm text-text-muted">
+                    {mapError ?? "Map provider is not configured."}
+                  </p>
+                </div>
               </div>
             )}
-            {isLoadingMap && <p className="text-xs text-text-muted">Loading map…</p>}
-            {INCIDENTS.map((incident) => (
-              <button
-                key={incident.id}
-                onClick={() => {
-                  if (mapInstance.current) {
-                    mapInstance.current.panTo(incident.coords);
-                    mapInstance.current.setZoom(14);
-                    setSelected(incident.coords);
-                  }
-                }}
-                className="w-full text-left border border-border-dark rounded-lg px-3 py-2 bg-white/5 hover:bg-white/10 transition-colors"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-bold text-white">{incident.title}</p>
-                    <p className="text-xs text-text-muted">{incident.address}</p>
-                    <p className="text-[11px] text-text-muted">Lat {incident.coords.lat.toFixed(4)}, Lng {incident.coords.lng.toFixed(4)}</p>
-                  </div>
-                  <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
-                      incident.severity === 'Critical'
-                        ? 'bg-red-500/20 text-red-400'
-                        : incident.severity === 'High'
-                        ? 'bg-orange-500/20 text-orange-400'
-                        : 'bg-primary/20 text-primary'
-                    }`}
-                  >
-                    {incident.severity}
-                  </span>
-                </div>
-              </button>
-            ))}
+            <div className="absolute left-4 top-4 rounded-lg border border-border-dark bg-[#0b1110]/90 p-3 backdrop-blur">
+              <p className="text-xs font-bold uppercase text-text-muted">
+                Visible Cases
+              </p>
+              <p className="mt-1 text-2xl font-bold text-white">
+                {mappedCases.length}
+              </p>
+            </div>
           </div>
-        </div>
+        </section>
+
+        <aside className="flex flex-col gap-4">
+          {selectedCase && <HotspotDetail item={selectedCase} />}
+
+          <div className="rounded-lg border border-border-dark bg-[#111813]">
+            <div className="border-b border-border-dark p-4">
+              <p className="text-sm font-bold text-white">Highest Risk Areas</p>
+              <p className="mt-1 text-xs text-text-muted">
+                Sorted by bypass probability and estimated loss.
+              </p>
+            </div>
+            <div className="max-h-[540px] overflow-y-auto">
+              {mappedCases.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setSelectedCaseId(item.id);
+                    if (item.coords && mapInstance.current) {
+                      mapInstance.current.panTo(item.coords);
+                      mapInstance.current.setZoom(14);
+                    }
+                  }}
+                  className={`w-full border-b border-border-dark px-4 py-3 text-left transition-colors hover:bg-white/5 ${
+                    selectedCase?.id === item.id ? "bg-primary/10" : ""
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-white">
+                        {item.address}
+                      </p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        {item.feederId} | {item.transformerId}
+                      </p>
+                    </div>
+                    <span className={badgeClass(item.severity)}>
+                      {formatPercent(item.riskScore)}
+                    </span>
+                  </div>
+                </button>
+              ))}
+              {!mappedCases.length && (
+                <div className="px-4 py-10 text-center text-sm text-text-muted">
+                  {latest.isLoading
+                    ? "Loading GIS hotspots."
+                    : "No mapped bypass-risk cases available."}
+                </div>
+              )}
+            </div>
+          </div>
+        </aside>
       </div>
+    </main>
+  );
+}
+
+function HotspotDetail({ item }: { item: TheftCase }) {
+  return (
+    <div className="rounded-lg border border-border-dark bg-[#111813] p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+            Selected Hotspot
+          </p>
+          <h2 className="mt-2 text-lg font-bold text-white">{item.id}</h2>
+        </div>
+        <span className={badgeClass(item.severity)}>{item.severity}</span>
+      </div>
+      <p className="mt-4 text-sm font-medium text-white">{item.address}</p>
+      <dl className="mt-4 grid grid-cols-2 gap-3">
+        <Metric label="Risk" value={formatPercent(item.riskScore)} />
+        <Metric label="Loss" value={`${formatKwh(item.lossKwh)} kWh`} />
+        <Metric label="Recovery" value={formatNaira(item.recoveryAmount)} />
+        <Metric label="Region" value={item.region} />
+      </dl>
     </div>
   );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border-dark bg-black/20 p-3">
+      <p className="text-[11px] font-bold uppercase text-text-muted">{label}</p>
+      <p className="mt-1 break-words text-sm font-bold text-white">{value}</p>
+    </div>
+  );
+}
+
+function withFallbackCoordinates(item: TheftCase, index: number): TheftCase {
+  if (item.coords) return item;
+  const row = index % 8;
+  const column = Math.floor(index / 8) % 5;
+  return {
+    ...item,
+    coords: {
+      lat: LAGOS_CENTER.lat + (row - 3.5) * 0.018,
+      lng: LAGOS_CENTER.lng + (column - 2) * 0.026,
+    },
+  };
+}
+
+function markerColor(severity: TheftCase["severity"]) {
+  if (severity === "Critical") return "#ef4444";
+  if (severity === "High") return "#f59e0b";
+  if (severity === "Medium") return "#38bdf8";
+  return "#11d452";
+}
+
+function badgeClass(severity: TheftCase["severity"] | string) {
+  const normalized =
+    severity === "Critical" || severity === "High" || severity === "Medium"
+      ? severity
+      : severityFromRisk(0.2);
+
+  if (normalized === "Critical") {
+    return "rounded-full border border-red-400/40 bg-red-400/10 px-2 py-1 text-xs font-bold text-red-300";
+  }
+  if (normalized === "High") {
+    return "rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-xs font-bold text-amber-300";
+  }
+  if (normalized === "Medium") {
+    return "rounded-full border border-blue-400/40 bg-blue-400/10 px-2 py-1 text-xs font-bold text-blue-300";
+  }
+  return "rounded-full border border-primary/40 bg-primary/10 px-2 py-1 text-xs font-bold text-primary";
 }

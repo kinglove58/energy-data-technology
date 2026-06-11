@@ -4,6 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { SignOutButton, useUser } from "@clerk/nextjs";
 import Image from "next/image";
+import { useMemo } from "react";
+import { buildTheftCases } from "@/lib/powergridAnalytics";
+import { useLatestLiveResults } from "@/services/powergridHooks";
 
 const NAV_ITEMS = [
   { href: "/dashboard", icon: "dashboard", label: "Executive Overview" },
@@ -26,6 +29,14 @@ const NAV_ITEMS = [
 export default function Sidebar() {
   const pathname = usePathname();
   const { user } = useUser();
+  const latest = useLatestLiveResults();
+  const fieldOpsCount = useMemo(
+    () =>
+      buildTheftCases(latest.data, 500).filter((item) =>
+        ["Critical", "High"].includes(item.severity)
+      ).length,
+    [latest.data]
+  );
 
   return (
     <aside className="hidden lg:flex w-72 flex-col border-r border-border-dark bg-[#111813] h-full flex-shrink-0 z-20">
@@ -53,6 +64,10 @@ export default function Sidebar() {
           <nav className="flex flex-col gap-1">
             {NAV_ITEMS.map((item) => {
               const isActive = pathname === item.href;
+              const count =
+                item.href === "/dashboard/field-ops"
+                  ? fieldOpsCount || item.count
+                  : item.count;
               return (
                 <Link
                   key={item.href}
@@ -77,9 +92,9 @@ export default function Sidebar() {
                   >
                     {item.label}
                   </span>
-                  {item.count && (
+                  {count && (
                     <span className="ml-auto bg-red-500/20 text-red-400 text-[10px] font-bold px-1.5 py-0.5 rounded">
-                      {item.count}
+                      {count}
                     </span>
                   )}
                 </Link>

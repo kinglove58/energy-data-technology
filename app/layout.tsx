@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import ClerkProviderClient from "@/components/providers/ClerkProviderClient";
+import QueryProvider from "@/components/providers/QueryProvider";
 
 export const metadata: Metadata = {
   title: "Energy Data Network Assurance",
@@ -32,7 +33,9 @@ export default function RootLayout({
         />
       </head>
       <body className="font-sans">
-        <ClerkProviderClient>{children}</ClerkProviderClient>
+        <ClerkProviderClient>
+          <QueryProvider>{children}</QueryProvider>
+        </ClerkProviderClient>
       </body>
     </html>
   );

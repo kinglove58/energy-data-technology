@@ -23,7 +23,7 @@ import {
   WalletCards,
 } from "lucide-react";
 import { fetchInsights } from "@/services/insights";
-import { fetchLatestLiveResults } from "@/services/powergrid";
+import { useLatestLiveResults } from "@/services/powergridHooks";
 import { downloadReportPdf, generateReport } from "@/services/reports";
 import type { Insight } from "@/types/ai";
 import type {
@@ -332,6 +332,7 @@ const InsightItem = ({ text, action, type }: Insight) => (
 );
 
 export default function ExecutiveOverview() {
+  const latestQuery = useLatestLiveResults();
   const [payload, setPayload] = useState<LiveAnalysisResultsResponse | null>(null);
   const [state, setState] = useState<LoadState>("loading");
   const [message, setMessage] = useState("Connecting to the Powergrid API.");
@@ -349,34 +350,46 @@ export default function ExecutiveOverview() {
   const modelDetails = useMemo(() => getModelDetails(results), [results]);
   const latestAnalyzedAt = useMemo(() => getLatestAnalyzedAt(results), [results]);
 
-  const loadResults = async () => {
+  const loadResults = () => {
     setState("loading");
     setMessage("Connecting to the Powergrid API.");
-    try {
-      const response = await fetchLatestLiveResults();
-      if (response.success && response.data && response.data.result_count > 0) {
-        setPayload(response.data);
-        setState("ready");
-        setMessage("Latest grouped-analysis results loaded.");
-        return;
-      }
-      setPayload(null);
-      setState("empty");
-      setMessage(response.message || "No stored grouped-analysis results found yet.");
-    } catch (error) {
-      setPayload(null);
-      setState("error");
-      setMessage(
-        error instanceof Error
-          ? error.message
-          : "Unable to load latest grouped-analysis results."
-      );
-    }
+    latestQuery.refetch();
   };
 
   useEffect(() => {
-    loadResults();
-  }, []);
+    if (latestQuery.isLoading) {
+      setState("loading");
+      setMessage("Connecting to the Powergrid API.");
+      return;
+    }
+
+    if (latestQuery.isError) {
+      setPayload(null);
+      setState("error");
+      setMessage(
+        latestQuery.error instanceof Error
+          ? latestQuery.error.message
+          : "Unable to load latest grouped-analysis results."
+      );
+      return;
+    }
+
+    if (latestQuery.data && latestQuery.data.result_count > 0) {
+      setPayload(latestQuery.data);
+      setState("ready");
+      setMessage("Latest grouped-analysis results loaded.");
+      return;
+    }
+
+    setPayload(null);
+    setState("empty");
+    setMessage("No stored grouped-analysis results found yet.");
+  }, [
+    latestQuery.data,
+    latestQuery.error,
+    latestQuery.isError,
+    latestQuery.isLoading,
+  ]);
 
   useEffect(() => {
     if (state !== "ready" || !payload) return;

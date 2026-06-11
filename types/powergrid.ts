@@ -81,3 +81,97 @@ export type LiveAnalysisResultsResponse = {
   result_count: number;
   results: LiveGroupAnalysisResult[];
 };
+
+export type PowergridDependencyStatus = {
+  up: boolean;
+  target: string;
+  details: string;
+};
+
+export type PowergridModelStatus = {
+  model_name: string;
+  version: string | null;
+  artifact_dir: string | null;
+  artifact_available: boolean;
+  reason: string | null;
+};
+
+export type PowergridMonitoringStatus = {
+  status: string;
+  generated_at: string;
+  app_name: string;
+  app_env: string;
+  dependencies: Record<string, PowergridDependencyStatus>;
+  model_status: PowergridModelStatus;
+  model_details?: ModelInferenceDetails;
+  live_event_counts: Record<string, number>;
+  drift_report: unknown | null;
+  metrics: {
+    enabled: boolean;
+    endpoint: string;
+  };
+};
+
+export type PowergridReadinessStatus = PowergridMonitoringStatus & {
+  status: "ok" | "degraded" | string;
+};
+
+export type DatasetFileInfo = {
+  dataset_name: string;
+  filename: string;
+  collection_name: string;
+  path: string;
+  exists: boolean;
+  file_size_bytes: number | null;
+  columns: string[];
+  used_for_training: boolean;
+  stored_in_historical_db: boolean;
+  used_for_realtime_generation: boolean;
+};
+
+export type DatasetCatalogResponse = {
+  datasets: DatasetFileInfo[];
+};
+
+export type LiveAnalysisJobRequest = {
+  model_version?: string | null;
+  persist_results?: boolean;
+  generate_if_empty?: boolean;
+  node_event_count?: number | null;
+  feeder_event_count?: number | null;
+};
+
+export type LiveAnalysisJobResponse = {
+  job_id: string;
+  task_id: string;
+  status: string;
+  submitted_at: string;
+  source_live_db: string;
+  result_db: string;
+  result_collection: string;
+};
+
+export type LiveAnalysisJobStatusResponse = {
+  job_id: string;
+  status: string;
+  completed: boolean;
+  result: Record<string, unknown> | null;
+  error: string | null;
+};
+
+export type RealtimeGenerationRequest = {
+  node_event_count?: number | null;
+  feeder_event_count?: number | null;
+};
+
+export type RealtimeGenerationResponse = {
+  generated_at: string;
+  realtime_db: string;
+  node_event_count: number;
+  transformer_event_count: number;
+  feeder_event_count: number;
+  region_event_count: number;
+  stored_collections: string[];
+  published_topics: string[];
+  generated_events: unknown[];
+};

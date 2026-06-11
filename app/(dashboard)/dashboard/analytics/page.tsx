@@ -1,415 +1,297 @@
-﻿'use client';
+"use client";
 
-import React, { useState } from 'react';
-import { 
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend, LineChart, Line
-} from 'recharts';
+import { useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import {
+  powergridKeys,
+  useLatestLiveResults,
+  useLiveAnalysisJob,
+  usePowergridMonitoringStatus,
+  useSubmitLiveAnalysisJob,
+} from "@/services/powergridHooks";
+import {
+  aggregateAssets,
+  buildTheftCases,
+  formatKwh,
+  formatNaira,
+  formatPercent,
+  summarizeLiveResults,
+} from "@/lib/powergridAnalytics";
+import { downloadReportPdf, generateReport } from "@/services/reports";
 
-// --- Mock Data ---
+export default function AnalyticsPage() {
+  const queryClient = useQueryClient();
+  const latest = useLatestLiveResults();
+  const monitoring = usePowergridMonitoringStatus(false);
+  const submitJob = useSubmitLiveAnalysisJob();
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [reportState, setReportState] = useState("Ready");
+  const job = useLiveAnalysisJob(jobId);
 
-const TREND_DATA = [
-  { month: 'Jan', technicalLoss: 12.5, nonTechnicalLoss: 18.2, recovery: 5.4 },
-  { month: 'Feb', technicalLoss: 12.2, nonTechnicalLoss: 17.8, recovery: 6.1 },
-  { month: 'Mar', technicalLoss: 11.9, nonTechnicalLoss: 16.5, recovery: 8.2 },
-  { month: 'Apr', technicalLoss: 12.1, nonTechnicalLoss: 15.9, recovery: 9.5 },
-  { month: 'May', technicalLoss: 11.5, nonTechnicalLoss: 13.4, recovery: 12.8 },
-  { month: 'Jun', technicalLoss: 11.2, nonTechnicalLoss: 11.8, recovery: 14.5 },
-];
+  const summary = useMemo(() => summarizeLiveResults(latest.data), [latest.data]);
+  const topFeeders = useMemo(
+    () => aggregateAssets(latest.data, "feeder", 10),
+    [latest.data]
+  );
+  const topTransformers = useMemo(
+    () => aggregateAssets(latest.data, "transformer", 8),
+    [latest.data]
+  );
+  const cases = useMemo(() => buildTheftCases(latest.data, 12), [latest.data]);
 
-const THEFT_DISTRIBUTION = [
-  { name: 'Meter Bypass', value: 45, color: '#ef4444' },
-  { name: 'Direct Hooking', value: 30, color: '#f97316' },
-  { name: 'Mag. Tamper', value: 15, color: '#eab308' },
-  { name: 'Billing Error', value: 10, color: '#3b82f6' },
-];
+  useEffect(() => {
+    if (job.data?.completed) {
+      queryClient.invalidateQueries({ queryKey: powergridKeys.latestResults() });
+      queryClient.invalidateQueries({ queryKey: powergridKeys.monitoring(false) });
+    }
+  }, [job.data?.completed, queryClient]);
 
-const INITIAL_REPORTS = [
-  { id: 'MR-2024-06', title: 'June 2024 Theft Cases Report', type: 'PDF', date: 'Jul 01, 2024', author: 'System Gen.', status: 'Ready' },
-  { id: 'MR-2024-05', title: 'May 2024 Theft Cases Report', type: 'PDF', date: 'Jun 01, 2024', author: 'System Gen.', status: 'Ready' },
-  { id: 'MR-2024-04', title: 'April 2024 Theft Cases Report', type: 'PDF', date: 'May 01, 2024', author: 'System Gen.', status: 'Archived' },
-  { id: 'MR-2024-03', title: 'March 2024 Theft Cases Report', type: 'CSV', date: 'Apr 01, 2024', author: 'System Gen.', status: 'Archived' },
-];
-
-const Analytics: React.FC = () => {
-  const [timeRange, setTimeRange] = useState('6M');
-  const [reports, setReports] = useState(INITIAL_REPORTS);
-  
-  // New Report Modal State
-  const [showNewReportModal, setShowNewReportModal] = useState(false);
-  const [newReportTitle, setNewReportTitle] = useState('');
-  const [newReportType, setNewReportType] = useState('PDF');
-
-  const handleCreateReport = (e: React.FormEvent) => {
-    e.preventDefault();
-    const currentMonth = new Date().toLocaleString('default', { month: 'long', year: 'numeric' });
-    const newReport = {
-        id: `MR-2024-${Math.floor(Math.random() * 900) + 100}`,
-        title: newReportTitle || `${currentMonth} Theft Cases Report`,
-        type: newReportType,
-        date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-        author: 'Jane Doe',
-        status: 'Ready'
-    };
-    setReports([newReport, ...reports]);
-    setShowNewReportModal(false);
-    setNewReportTitle('');
-    setNewReportType('PDF');
+  const handleRunAnalysis = async () => {
+    const response = await submitJob.mutateAsync({
+      persist_results: true,
+      generate_if_empty: true,
+    });
+    setJobId(response.job_id);
   };
 
-  const handleDownloadReport = (report: any) => {
-    // Generate realistic looking monthly case report content
-    let content = ` ENERGY DATA NETWORK ASSURANCE - MONTHLY CASE REPORT\n`;
-    content += `=================================================\n`;
-    content += `REPORT TITLE: ${report.title}\n`;
-    content += `REPORT ID   : ${report.id}\n`;
-    content += `GENERATED ON: ${report.date}\n`;
-    content += `AUTHOR      : ${report.author}\n`;
-    content += `=================================================\n\n`;
-    
-    content += `SUMMARY STATISTICS:\n`;
-    content += `- Total Cases Detected: 142\n`;
-    content += `- Critical Severity: 45\n`;
-    content += `- Revenue Recovered: $42,500\n`;
-    content += `- Average Resolution Time: 4.5 Days\n\n`;
+  const handleGenerateReport = async () => {
+    setReportState("Generating");
+    const response = await generateReport({
+      period: "Latest live analysis batch",
+      metrics: {
+        energySuppliedMWh: summary.deliveredKwh / 1000,
+        energyBilledMWh: summary.consumedKwh / 1000,
+        revenueLossUSD: summary.lossKwh * 260,
+        theftCases: summary.bypassCaseCount,
+        recoveryUSD: cases.reduce((sum, item) => sum + item.recoveryAmount, 0),
+      },
+    });
 
-    content += `CASE DETAILS LOG:\n`;
-    content += `ID       | TYPE              | SEVERITY  | STATUS      | LOSS ESTIMATE | LOCATION\n`;
-    content += `---------|-------------------|-----------|-------------|---------------|--------------------------\n`;
-    content += `TC-9921  | Meter Bypass      | Critical  | Active      | $2,400/mo     | Block 4, Industrial Est.\n`;
-    content += `TC-9924  | Magnetic Tamper   | High      | Investig.   | $450/mo       | 12 Maple Ave\n`;
-    content += `TC-9855  | Direct Hook       | Critical  | Scheduled   | $1,200/mo     | Sector 7, Market Sq.\n`;
-    content += `TC-9802  | Usage Anomaly     | Medium    | Pending     | $150/mo       | 88 Oak St\n`;
-    content += `TC-9750  | Meter Bypass      | High      | Resolved    | $890/mo       | Plot 44, New Extension\n`;
-    content += `TC-9711  | Load Mismatch     | Low       | Resolved    | $120/mo       | Commercial Complex A\n`;
-    content += `... [136 more records]\n\n`;
-    
-    content += `END OF REPORT\n`;
-    content += `Generated by DisCoShield AI System`;
-    
-    // Create a blob and download it
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
+    if (!response.success || !response.data?.markdown) {
+      setReportState(response.message || "Report failed");
+      return;
+    }
+
+    const pdf = await downloadReportPdf(
+      response.data.markdown,
+      "Eko Disco Revenue Assurance Report"
+    );
+    const url = URL.createObjectURL(pdf);
+    const link = document.createElement("a");
     link.href = url;
-    // Download as .txt for simplicity, but named with the correct extension to simulate the file
-    link.download = `${report.title.replace(/\s+/g, '_')}_${report.id}.txt`; 
+    link.download = "eko-disco-revenue-assurance-report.pdf";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  };
-
-  const handleDeleteReport = (id: string) => {
-    if (confirm('Are you sure you want to delete this report?')) {
-        setReports(reports.filter(r => r.id !== id));
-    }
+    setReportState("Ready");
   };
 
   return (
-    <div className="flex-1 overflow-y-auto p-6 lg:p-8 bg-background-light dark:bg-background-dark scrollbar-hide relative">
-      <div className="max-w-[1600px] mx-auto flex flex-col gap-8">
-        
-        {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+    <main className="flex-1 overflow-y-auto bg-[#0b1110] p-6 lg:p-8">
+      <div className="mx-auto flex max-w-[1600px] flex-col gap-6">
+        <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Analytics & Reports</h1>
-            <p className="text-text-muted text-sm mt-1">Deep dive into revenue leakage, loss trends, and operational efficiency.</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+              Analytics & Reports
+            </p>
+            <h1 className="mt-2 text-2xl font-bold text-white">
+              Revenue Assurance Analytics
+            </h1>
+            <p className="mt-1 max-w-3xl text-sm text-text-muted">
+              Aggregated loss, bypass-risk, feeder, and transformer intelligence
+              from the latest backend grouped-analysis run.
+            </p>
           </div>
-          <div className="flex items-center gap-3 bg-white dark:bg-surface-dark p-1 rounded-lg border border-border-dark shadow-sm">
-             {['1M', '3M', '6M', 'YTD', '1Y'].map((range) => (
-               <button 
-                key={range}
-                onClick={() => setTimeRange(range)}
-                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${
-                  timeRange === range 
-                  ? 'bg-primary text-black shadow-sm' 
-                  : 'text-text-muted hover:text-white hover:bg-white/5'
-                }`}
-               >
-                 {range}
-               </button>
-             ))}
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={handleRunAnalysis}
+              disabled={submitJob.isPending || Boolean(jobId && !job.data?.completed)}
+              className="inline-flex items-center gap-2 rounded-lg border border-border-dark px-4 py-2 text-sm font-bold text-text-muted transition-colors hover:border-primary/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-lg">play_arrow</span>
+              {submitJob.isPending || (jobId && !job.data?.completed)
+                ? "Running"
+                : "Run Analysis"}
+            </button>
+            <button
+              onClick={handleGenerateReport}
+              disabled={reportState === "Generating" || !latest.data}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-black transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-lg">download</span>
+              {reportState === "Generating" ? "Generating" : "Export Report"}
+            </button>
           </div>
-        </div>
+        </header>
 
-        {/* Key Metrics Row */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-          <MetricCard 
-            title="Total Revenue Assured" 
-            value="$12.4M" 
-            trend="+8.5%" 
-            trendIsGood={true} 
-            icon="payments" 
-            subtext="vs last period"
-          />
-          <MetricCard 
-            title="AT&C Losses" 
-            value="23.4%" 
-            trend="-2.1%" 
-            trendIsGood={true} 
-            icon="trending_down" 
-            subtext="reduction in losses"
-          />
-          <MetricCard 
-            title="Theft Detection Rate" 
-            value="94.2%" 
-            trend="+5.3%" 
-            trendIsGood={true} 
-            icon="radar" 
-            subtext="accuracy"
-          />
-          <MetricCard 
-            title="Pending Investigations" 
-            value="42" 
-            trend="+12" 
-            trendIsGood={false} 
-            icon="pending_actions" 
-            subtext="new cases"
-            isWarning
-          />
-        </div>
+        {jobId && (
+          <div className="rounded-lg border border-border-dark bg-[#111813] px-4 py-3 text-sm text-text-muted">
+            Job <span className="font-mono text-white">{jobId}</span> status:{" "}
+            <span className="font-bold text-primary">
+              {job.data?.status ?? "POLLING"}
+            </span>
+          </div>
+        )}
 
-        {/* Charts Row 1: Loss Trends & Theft Distribution */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          
-          {/* Main Trend Chart */}
-          <div className="lg:col-span-2 bg-white dark:bg-surface-dark border border-border-dark rounded-xl p-6 shadow-sm flex flex-col min-h-[400px]">
-            <div className="flex justify-between items-center mb-6">
-              <div>
-                <h3 className="text-lg font-bold text-gray-900 dark:text-white">Loss Reduction & Recovery Trend</h3>
-                <p className="text-xs text-text-muted">Technical vs. Non-Technical Losses against Recovery Value</p>
-              </div>
-              <button className="text-text-muted hover:text-white"><span className="material-symbols-outlined">more_horiz</span></button>
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
+          <Metric title="Result Groups" value={String(summary.resultCount)} />
+          <Metric title="Bypass Cases" value={String(summary.bypassCaseCount)} />
+          <Metric title="Avg Risk" value={formatPercent(summary.averageRisk)} />
+          <Metric title="Loss Estimate" value={`${formatKwh(summary.lossKwh)} kWh`} />
+          <Metric
+            title="Revenue Exposure"
+            value={formatNaira(summary.lossKwh * 260)}
+          />
+        </section>
+
+        <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+          <div className="rounded-lg border border-border-dark bg-[#111813] p-5 xl:col-span-2">
+            <div className="mb-5">
+              <h2 className="text-lg font-bold text-white">
+                Feeder Loss & Risk Ranking
+              </h2>
+              <p className="mt-1 text-xs text-text-muted">
+                Top feeders by theft-risk score from live grouped analysis.
+              </p>
             </div>
-            <div className="flex-1 w-full">
+            <div className="h-[360px]">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={TREND_DATA} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorNonTech" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorRecovery" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#11d452" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#11d452" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#28392e" vertical={false} />
-                  <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fill: '#9db9a6', fontSize: 12}} dy={10} />
-                  <YAxis axisLine={false} tickLine={false} tick={{fill: '#9db9a6', fontSize: 12}} unit="%" />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: '#1c271f', border: '1px solid #28392e', borderRadius: '8px', color: '#fff' }}
-                    itemStyle={{ padding: 0 }}
+                <BarChart data={topFeeders}>
+                  <CartesianGrid stroke="#28392e" strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fill: "#9db9a6", fontSize: 11 }} />
+                  <YAxis tick={{ fill: "#9db9a6", fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{
+                      background: "#111813",
+                      border: "1px solid #28392e",
+                      borderRadius: 8,
+                      color: "#fff",
+                    }}
                   />
-                  <Legend iconType="circle" wrapperStyle={{ paddingTop: '20px' }} />
-                  <Area type="monotone" dataKey="nonTechnicalLoss" name="Non-Technical Loss" stroke="#ef4444" fillOpacity={1} fill="url(#colorNonTech)" strokeWidth={2} />
-                  <Area type="monotone" dataKey="recovery" name="Revenue Recovered" stroke="#11d452" fillOpacity={1} fill="url(#colorRecovery)" strokeWidth={2} />
-                  <Line type="monotone" dataKey="technicalLoss" name="Technical Loss Baseline" stroke="#3b82f6" strokeWidth={2} strokeDasharray="5 5" dot={false} />
-                </AreaChart>
+                  <Bar dataKey="riskScore" name="Risk Score" fill="#11d452" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="bypassCount" name="Flagged Households" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          {/* Theft Breakdown Pie Chart */}
-          <div className="lg:col-span-1 bg-white dark:bg-surface-dark border border-border-dark rounded-xl p-6 shadow-sm flex flex-col">
-            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-1">Leakage Sources</h3>
-            <p className="text-xs text-text-muted mb-6">Breakdown of detected anomalies</p>
-            
-            <div className="flex-1 relative min-h-[250px]">
-               <ResponsiveContainer width="100%" height="100%">
-                 <PieChart>
-                    <Pie
-                      data={THEFT_DISTRIBUTION}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={80}
-                      paddingAngle={5}
-                      dataKey="value"
-                    >
-                      {THEFT_DISTRIBUTION.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} stroke="rgba(0,0,0,0)" />
-                      ))}
-                    </Pie>
-                    <Tooltip contentStyle={{ backgroundColor: '#1c271f', borderRadius: '8px', border: 'none' }} />
-                 </PieChart>
-               </ResponsiveContainer>
-               {/* Center Text Overlay */}
-               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  <span className="text-2xl font-bold text-white">1,204</span>
-                  <span className="text-[10px] text-text-muted uppercase">Cases</span>
-               </div>
+          <div className="rounded-lg border border-border-dark bg-[#111813] p-5">
+            <h2 className="text-lg font-bold text-white">Runtime Snapshot</h2>
+            <div className="mt-4 space-y-3">
+              <Snapshot
+                label="Backend"
+                value={monitoring.data?.status?.toUpperCase() ?? "LOADING"}
+              />
+              <Snapshot
+                label="Model"
+                value={monitoring.data?.model_status?.version ?? "Fallback"}
+              />
+              <Snapshot
+                label="Live Node Events"
+                value={String(monitoring.data?.live_event_counts?.node ?? 0)}
+              />
+              <Snapshot
+                label="Job"
+                value={job.data?.completed ? "Completed" : jobId ? "Running" : "Idle"}
+              />
             </div>
+          </div>
+        </section>
 
-            <div className="grid grid-cols-2 gap-3 mt-4">
-              {THEFT_DISTRIBUTION.map((item) => (
-                <div key={item.name} className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }}></div>
-                  <div className="flex flex-col">
-                     <span className="text-xs text-gray-400">{item.name}</span>
-                     <span className="text-sm font-bold text-white">{item.value}%</span>
+        <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          <div className="rounded-lg border border-border-dark bg-[#111813] p-5">
+            <h2 className="text-lg font-bold text-white">
+              Transformer Watchlist
+            </h2>
+            <div className="mt-4 space-y-3">
+              {topTransformers.map((item) => (
+                <div
+                  key={item.id}
+                  className="rounded-lg border border-border-dark bg-black/20 p-4"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="font-bold text-white">{item.label}</p>
+                      <p className="mt-1 text-xs text-text-muted">
+                        {item.zone} | {item.region}
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-1 text-xs font-bold text-primary">
+                      {formatPercent(item.riskScore)}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                    <span className="text-text-muted">
+                      Loss <b className="text-white">{formatKwh(item.lossKwh)}</b>
+                    </span>
+                    <span className="text-text-muted">
+                      Cases <b className="text-white">{item.bypassCount}</b>
+                    </span>
+                    <span className="text-text-muted">
+                      Supplied{" "}
+                      <b className="text-white">{formatKwh(item.deliveredKwh)}</b>
+                    </span>
                   </div>
                 </div>
               ))}
             </div>
           </div>
-        </div>
 
-        {/* Row 2: Reports List (Full Width) */}
-        <div className="flex flex-col gap-6">
-          <div className="bg-white dark:bg-surface-dark border border-border-dark rounded-xl p-0 shadow-sm flex flex-col overflow-hidden">
-             <div className="p-5 border-b border-border-dark flex justify-between items-center bg-gray-50 dark:bg-white/5">
-                <h3 className="text-lg font-bold text-gray-900 dark:text-white">Generated Reports</h3>
-                <button 
-                    onClick={() => setShowNewReportModal(true)}
-                    className="bg-primary hover:bg-primary-hover text-black text-xs font-bold py-2 px-3 rounded-lg flex items-center gap-1 transition-colors"
+          <div className="rounded-lg border border-border-dark bg-[#111813] p-5">
+            <h2 className="text-lg font-bold text-white">
+              Priority Theft Cases
+            </h2>
+            <div className="mt-4 space-y-3">
+              {cases.map((item) => (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between gap-4 rounded-lg border border-border-dark bg-black/20 p-4"
                 >
-                    <span className="material-symbols-outlined text-[16px]">add</span> New Report
-                </button>
-             </div>
-             <div className="flex-1 overflow-y-auto max-h-[400px]">
-                <table className="w-full text-left text-sm">
-                   <thead className="bg-white dark:bg-surface-dark text-xs text-text-muted uppercase sticky top-0">
-                      <tr>
-                         <th className="px-5 py-3 font-medium">Report Name</th>
-                         <th className="px-5 py-3 font-medium">Date</th>
-                         <th className="px-5 py-3 font-medium text-right">Action</th>
-                      </tr>
-                   </thead>
-                   <tbody className="divide-y divide-border-dark">
-                      {reports.length > 0 ? reports.map((report) => (
-                         <tr key={report.id} className="hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group">
-                            <td className="px-5 py-3">
-                               <div className="flex items-center gap-3">
-                                  <div className={`w-8 h-8 rounded flex items-center justify-center text-[10px] font-bold ${
-                                      report.type === 'PDF' ? 'bg-red-500/10 text-red-500' : 
-                                      report.type === 'CSV' ? 'bg-green-500/10 text-green-500' : 
-                                      'bg-blue-500/10 text-blue-500'
-                                  }`}>
-                                     {report.type}
-                                  </div>
-                                  <div>
-                                     <p className="font-medium text-gray-900 dark:text-white">{report.title}</p>
-                                     <p className="text-[10px] text-text-muted">{report.id} â€¢ {report.author}</p>
-                                  </div>
-                                </div>
-                            </td>
-                            <td className="px-5 py-3 text-gray-500 dark:text-gray-400 text-xs">
-                               {report.date}
-                            </td>
-                            <td className="px-5 py-3 text-right">
-                               <div className="flex items-center justify-end gap-2">
-                                   <button 
-                                        onClick={() => handleDownloadReport(report)}
-                                        className="text-gray-500 hover:text-primary transition-colors p-1"
-                                        title="Download"
-                                    >
-                                      <span className="material-symbols-outlined">download</span>
-                                   </button>
-                                   <button 
-                                        onClick={() => handleDeleteReport(report.id)}
-                                        className="text-gray-500 hover:text-red-500 transition-colors p-1"
-                                        title="Delete"
-                                    >
-                                      <span className="material-symbols-outlined">delete</span>
-                                   </button>
-                               </div>
-                            </td>
-                         </tr>
-                      )) : (
-                        <tr>
-                            <td colSpan={3} className="px-5 py-8 text-center text-text-muted text-xs">
-                                No reports generated yet. Click "New Report" to start.
-                            </td>
-                        </tr>
-                      )}
-                   </tbody>
-                </table>
-             </div>
+                  <div className="min-w-0">
+                    <p className="truncate font-bold text-white">{item.address}</p>
+                    <p className="mt-1 text-xs text-text-muted">
+                      {item.feederId} | {formatKwh(item.lossKwh)} kWh
+                    </p>
+                  </div>
+                  <span className="whitespace-nowrap rounded-full border border-red-400/40 bg-red-400/10 px-2 py-1 text-xs font-bold text-red-300">
+                    {formatPercent(item.riskScore)}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        </section>
       </div>
-
-      {/* New Report Modal */}
-      {showNewReportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-            <div className="bg-[#1c271f] w-full max-w-md rounded-2xl border border-border-dark shadow-2xl flex flex-col overflow-hidden">
-                <div className="p-5 border-b border-border-dark flex justify-between items-center bg-surface-highlight">
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <span className="material-symbols-outlined text-primary">post_add</span>
-                        Generate New Report
-                    </h3>
-                    <button onClick={() => setShowNewReportModal(false)} className="text-text-muted hover:text-white transition-colors">
-                        <span className="material-symbols-outlined">close</span>
-                    </button>
-                </div>
-                
-                <form onSubmit={handleCreateReport} className="p-6 flex flex-col gap-4">
-                    <div className="space-y-1.5">
-                        <label className="text-xs font-bold text-text-muted uppercase">Report Title</label>
-                        <input 
-                            type="text" 
-                            placeholder="e.g. Monthly Revenue Summary" 
-                            value={newReportTitle}
-                            onChange={(e) => setNewReportTitle(e.target.value)}
-                            className="w-full bg-surface-active border border-border-dark rounded-lg px-3 py-2.5 text-sm text-white focus:ring-1 focus:ring-primary focus:outline-none" 
-                        />
-                         <p className="text-[10px] text-gray-500">Leave blank for default monthly report title.</p>
-                    </div>
-
-                    <div className="space-y-1.5">
-                        <label className="text-xs font-bold text-text-muted uppercase">File Format</label>
-                        <select 
-                            value={newReportType}
-                            onChange={(e) => setNewReportType(e.target.value)}
-                            className="w-full bg-surface-active border border-border-dark rounded-lg px-3 py-2.5 text-sm text-white focus:ring-1 focus:ring-primary focus:outline-none"
-                        >
-                            <option value="PDF">PDF Document</option>
-                            <option value="CSV">CSV Data Export</option>
-                            <option value="XLSX">Excel Spreadsheet</option>
-                        </select>
-                    </div>
-
-                    <div className="pt-4 flex gap-3 border-t border-border-dark mt-2">
-                        <button type="button" onClick={() => setShowNewReportModal(false)} className="flex-1 py-2.5 rounded-lg border border-border-dark text-text-muted font-bold text-sm hover:bg-white/5 transition-colors">Cancel</button>
-                        <button type="submit" className="flex-1 py-2.5 rounded-lg bg-primary text-black font-bold text-sm hover:bg-green-400 transition-colors shadow-[0_0_15px_rgba(17,212,82,0.3)]">Generate</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-      )}
-
-    </div>
+    </main>
   );
-};
-
-const MetricCard = ({ title, value, trend, trendIsGood, icon, subtext, isWarning }: any) => {
-    return (
-        <div className={`bg-white dark:bg-surface-dark rounded-xl p-5 border ${isWarning ? 'border-orange-500/30' : 'border-border-dark'} shadow-sm flex flex-col justify-between min-h-[140px]`}>
-            <div className="flex justify-between items-start">
-                <div className={`p-2 rounded-lg ${isWarning ? 'bg-orange-500/10 text-orange-500' : 'bg-primary/10 text-primary'}`}>
-                    <span className="material-symbols-outlined">{icon}</span>
-                </div>
-                {isWarning && <span className="text-[10px] font-bold uppercase bg-orange-500/20 text-orange-500 px-2 py-0.5 rounded-full">Attention</span>}
-            </div>
-            <div>
-                <h3 className="text-3xl font-bold text-gray-900 dark:text-white mt-3">{value}</h3>
-                <p className="text-sm text-text-muted font-medium mt-0.5">{title}</p>
-            </div>
-            <div className="flex items-center gap-2 mt-2">
-                <span className={`text-xs font-bold px-1.5 py-0.5 rounded flex items-center gap-0.5 ${
-                    trendIsGood ? 'text-primary bg-primary/10' : 'text-red-500 bg-red-500/10'
-                }`}>
-                    {trendIsGood ? '+' : '-'} {trend}
-                </span>
-                <span className="text-[10px] text-gray-500">{subtext}</span>
-            </div>
-        </div>
-    )
 }
 
-export default Analytics;
+function Metric({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border-dark bg-[#111813] p-4">
+      <p className="text-xs font-bold uppercase text-text-muted">{title}</p>
+      <p className="mt-2 break-words text-xl font-bold text-white">{value}</p>
+    </div>
+  );
+}
 
-
-
+function Snapshot({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-lg border border-border-dark bg-black/20 px-3 py-3">
+      <span className="text-sm text-text-muted">{label}</span>
+      <span className="max-w-[190px] truncate text-right text-sm font-bold text-white">
+        {value}
+      </span>
+    </div>
+  );
+}

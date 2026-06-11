@@ -1,197 +1,283 @@
-'use client';
+"use client";
 
-import React, { useState } from 'react';
+import { useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  powergridKeys,
+  useDatasetCatalog,
+  useLiveAnalysisJob,
+  usePowergridMonitoringStatus,
+  usePowergridReadiness,
+  useSubmitLiveAnalysisJob,
+} from "@/services/powergridHooks";
+import { formatKwh } from "@/lib/powergridAnalytics";
 
-// Mock Data
-const USERS = [
-    { id: 1, name: 'Jane Doe', email: 'jane.doe@disco.com', role: 'Lead Analyst', status: 'Active', lastActive: '2 mins ago', avatar: 'https://lh3.googleusercontent.com/aida-public/AB6AXuDsOiwo6ttCVZuKeyZ-xkOBmNE9b2oeGb8W2q8Q4Ze2_8L7UzrtFY7u0JTbPeM_4eOh5fT49oCpaBnmUMK4UDCT9HonmEHpFt0kmMdWMIOo7Ltiii_7zEYGwaqZFWyky0958cKSKxKhy0jU1hK0RjKSzDRIz0uQdi6jo81ZEmrdDGBXR8Dujt2CIqxaRcHdb-p1-XerVFZgQcWOY4BUvTP9Zc1RxXWEb6tXs3X8BAlNOh5kuLfItZkWu0RVzSa0ys5h6wgKcMiPHVQ' },
-    { id: 2, name: 'John Smith', email: 'john.smith@disco.com', role: 'Field Ops Lead', status: 'Active', lastActive: '1 hour ago', avatar: 'https://i.pravatar.cc/150?u=a042581f4e29026024d' },
-    { id: 3, name: 'Sarah Connor', email: 's.connor@disco.com', role: 'Admin', status: 'Inactive', lastActive: '3 days ago', avatar: 'https://i.pravatar.cc/150?u=a042581f4e29026704d' },
-    { id: 4, name: 'Mike Ross', email: 'm.ross@disco.com', role: 'Analyst', status: 'Active', lastActive: '5 mins ago', avatar: 'https://i.pravatar.cc/150?u=a04258114e29026302d' },
-];
+const statusTone = {
+  ok: "border-primary/40 bg-primary/10 text-primary",
+  degraded: "border-amber-400/40 bg-amber-400/10 text-amber-300",
+  down: "border-red-400/40 bg-red-400/10 text-red-300",
+};
 
-const AUDIT_LOGS = [
-    { id: 1, action: 'User Login', user: 'Jane Doe', time: '10:42 AM', details: 'Successful login from IP 192.168.1.4' },
-    { id: 2, action: 'Report Generated', user: 'System', time: '09:00 AM', details: 'Monthly Revenue Report generated automatically' },
-    { id: 3, action: 'Settings Changed', user: 'Sarah Connor', time: 'Yesterday', details: 'Updated theft detection threshold to 85%' },
-];
+export default function AdminPage() {
+  const queryClient = useQueryClient();
+  const [jobId, setJobId] = useState<string | null>(null);
+  const readiness = usePowergridReadiness();
+  const monitoring = usePowergridMonitoringStatus(false);
+  const datasets = useDatasetCatalog();
+  const submitJob = useSubmitLiveAnalysisJob();
+  const job = useLiveAnalysisJob(jobId);
 
-const Admin: React.FC = () => {
-    const [users, setUsers] = useState(USERS);
-    const [showUserModal, setShowUserModal] = useState(false);
-    
-    // New User State
-    const [newUser, setNewUser] = useState({ name: '', email: '', role: 'Analyst' });
+  useEffect(() => {
+    if (job.data?.completed) {
+      queryClient.invalidateQueries({ queryKey: powergridKeys.latestResults() });
+      queryClient.invalidateQueries({ queryKey: powergridKeys.monitoring(false) });
+    }
+  }, [job.data?.completed, queryClient]);
 
-    const handleAddUser = (e: React.FormEvent) => {
-        e.preventDefault();
-        const user = {
-            id: users.length + 1,
-            name: newUser.name,
-            email: newUser.email,
-            role: newUser.role,
-            status: 'Active',
-            lastActive: 'Just now',
-            avatar: `https://i.pravatar.cc/150?u=${Math.random()}`
-        };
-        setUsers([...users, user]);
-        setShowUserModal(false);
-        setNewUser({ name: '', email: '', role: 'Analyst' });
-    };
+  const backendStatus = readiness.data?.status ?? monitoring.data?.status ?? "unknown";
+  const dependencies = monitoring.data?.dependencies ?? {};
+  const counts = monitoring.data?.live_event_counts ?? {};
+  const model = monitoring.data?.model_status;
+  const datasetRows = datasets.data?.datasets ?? [];
+  const availableDatasets = datasetRows.filter((dataset) => dataset.exists).length;
 
-    const handleDeleteUser = (id: number) => {
-        if(confirm('Delete user?')) {
-            setUsers(users.filter(u => u.id !== id));
-        }
-    };
+  const handleRunAnalysis = async () => {
+    const response = await submitJob.mutateAsync({
+      persist_results: true,
+      generate_if_empty: true,
+    });
+    setJobId(response.job_id);
+  };
 
-    return (
-        <div className="flex-1 overflow-y-auto p-6 lg:p-8 bg-background-light dark:bg-background-dark">
-             <div className="max-w-[1600px] mx-auto flex flex-col gap-8">
-                {/* Header */}
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Admin Console</h1>
-                    <p className="text-text-muted text-sm mt-1">Manage users, system health, and audit logs.</p>
+  return (
+    <main className="flex-1 overflow-y-auto bg-[#0b1110] p-6 lg:p-8">
+      <div className="mx-auto flex max-w-[1600px] flex-col gap-6">
+        <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-primary">
+              Platform Control
+            </p>
+            <h1 className="mt-2 text-2xl font-bold text-white">
+              Admin Console
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm text-text-muted">
+              Runtime health, model readiness, dataset availability, and live
+              analysis orchestration for the Eko Disco revenue-assurance demo.
+            </p>
+          </div>
+          <button
+            onClick={handleRunAnalysis}
+            disabled={submitJob.isPending || Boolean(jobId && !job.data?.completed)}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-black transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <span className="material-symbols-outlined text-lg">play_arrow</span>
+            {submitJob.isPending || (jobId && !job.data?.completed)
+              ? "Running Analysis"
+              : "Run Live Analysis"}
+          </button>
+        </header>
+
+        <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <StatusCard
+            title="Backend Readiness"
+            value={backendStatus.toUpperCase()}
+            detail={readiness.isLoading ? "Checking API readiness" : "FastAPI service"}
+            icon="verified"
+            tone={backendStatus === "ok" ? "ok" : "degraded"}
+          />
+          <StatusCard
+            title="Model Artifact"
+            value={model?.artifact_available ? "Ready" : "Fallback"}
+            detail={model?.version ?? model?.reason ?? "Model status pending"}
+            icon="model_training"
+            tone={model?.artifact_available ? "ok" : "degraded"}
+          />
+          <StatusCard
+            title="Live Events"
+            value={formatKwh(
+              Object.values(counts).reduce((sum, value) => sum + value, 0)
+            )}
+            detail={`Node ${counts.node ?? 0} | Transformer ${counts.transformer ?? 0}`}
+            icon="bolt"
+            tone="ok"
+          />
+          <StatusCard
+            title="Datasets"
+            value={`${availableDatasets}/${datasetRows.length || 0}`}
+            detail="CSV files available to the backend"
+            icon="dataset"
+            tone={availableDatasets === datasetRows.length ? "ok" : "degraded"}
+          />
+        </section>
+
+        {jobId && (
+          <section className="rounded-lg border border-border-dark bg-[#111813] p-4">
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-white">
+                  Live analysis job
+                </p>
+                <p className="mt-1 text-xs text-text-muted">{jobId}</p>
+              </div>
+              <span
+                className={`w-fit rounded-full border px-3 py-1 text-xs font-bold ${
+                  job.data?.completed
+                    ? statusTone.ok
+                    : job.data?.error
+                      ? statusTone.down
+                      : statusTone.degraded
+                }`}
+              >
+                {job.data?.status ?? "POLLING"}
+              </span>
+            </div>
+            {job.data?.error && (
+              <p className="mt-3 text-sm text-red-300">{job.data.error}</p>
+            )}
+          </section>
+        )}
+
+        <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
+          <div className="rounded-lg border border-border-dark bg-[#111813] p-5 xl:col-span-1">
+            <h2 className="text-lg font-bold text-white">Dependencies</h2>
+            <div className="mt-4 space-y-3">
+              {Object.entries(dependencies).map(([name, dependency]) => (
+                <div
+                  key={name}
+                  className="flex items-center justify-between rounded-lg border border-border-dark bg-black/20 px-3 py-3"
+                >
+                  <div>
+                    <p className="text-sm font-semibold capitalize text-white">
+                      {name}
+                    </p>
+                    <p className="mt-0.5 text-xs text-text-muted">
+                      {dependency.target}
+                    </p>
+                  </div>
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${
+                      dependency.up ? statusTone.ok : statusTone.down
+                    }`}
+                  >
+                    {dependency.up ? "UP" : "DOWN"}
+                  </span>
                 </div>
+              ))}
+              {!Object.keys(dependencies).length && (
+                <p className="text-sm text-text-muted">
+                  Dependency status is loading.
+                </p>
+              )}
+            </div>
+          </div>
 
-                {/* System Health Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <HealthCard title="System Status" value="Healthy" status="good" icon="check_circle" detail="All systems operational" />
-                    <HealthCard title="API Latency" value="45ms" status="good" icon="speed" detail="Avg response time" />
-                    <HealthCard title="Database Storage" value="85%" status="warning" icon="database" detail="1.2TB / 1.5TB Used" />
-                </div>
-
-                {/* User Management */}
-                <div className="bg-white dark:bg-surface-dark border border-border-dark rounded-xl shadow-sm flex flex-col">
-                    <div className="p-5 border-b border-border-dark flex justify-between items-center">
-                        <h3 className="text-lg font-bold text-gray-900 dark:text-white">User Management</h3>
-                        <button 
-                            onClick={() => setShowUserModal(true)}
-                            className="bg-primary hover:bg-primary-hover text-black font-bold py-2 px-3 rounded-lg flex items-center gap-2 text-sm transition-colors"
+          <div className="rounded-lg border border-border-dark bg-[#111813] p-5 xl:col-span-2">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Dataset Catalog</h2>
+                <p className="mt-1 text-xs text-text-muted">
+                  Backend files used for training, live generation, and context.
+                </p>
+              </div>
+              <button
+                onClick={() => datasets.refetch()}
+                className="rounded-lg border border-border-dark px-3 py-2 text-xs font-bold text-text-muted transition-colors hover:border-primary/50 hover:text-white"
+              >
+                Refresh
+              </button>
+            </div>
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-border-dark text-xs uppercase text-text-muted">
+                  <tr>
+                    <th className="py-3 pr-4">Dataset</th>
+                    <th className="py-3 pr-4">Collection</th>
+                    <th className="py-3 pr-4">Columns</th>
+                    <th className="py-3 pr-4">Purpose</th>
+                    <th className="py-3 text-right">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-dark">
+                  {datasetRows.map((dataset) => (
+                    <tr key={dataset.dataset_name}>
+                      <td className="py-3 pr-4">
+                        <p className="font-semibold text-white">
+                          {dataset.dataset_name}
+                        </p>
+                        <p className="text-xs text-text-muted">
+                          {dataset.filename}
+                        </p>
+                      </td>
+                      <td className="py-3 pr-4 text-text-muted">
+                        {dataset.collection_name}
+                      </td>
+                      <td className="py-3 pr-4 text-text-muted">
+                        {dataset.columns.length}
+                      </td>
+                      <td className="py-3 pr-4 text-text-muted">
+                        {[
+                          dataset.used_for_training ? "training" : null,
+                          dataset.used_for_realtime_generation ? "realtime" : null,
+                          dataset.stored_in_historical_db ? "historical" : null,
+                        ]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </td>
+                      <td className="py-3 text-right">
+                        <span
+                          className={`rounded-full border px-2 py-0.5 text-[11px] font-bold ${
+                            dataset.exists ? statusTone.ok : statusTone.down
+                          }`}
                         >
-                            <span className="material-symbols-outlined text-lg">person_add</span> Add User
-                        </button>
-                    </div>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-left text-sm">
-                            <thead className="bg-gray-50 dark:bg-black/20 text-xs text-text-muted uppercase">
-                                <tr>
-                                    <th className="px-5 py-3">User</th>
-                                    <th className="px-5 py-3">Role</th>
-                                    <th className="px-5 py-3">Status</th>
-                                    <th className="px-5 py-3">Last Active</th>
-                                    <th className="px-5 py-3 text-right">Actions</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-border-dark">
-                                {users.map(user => (
-                                    <tr key={user.id} className="hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
-                                        <td className="px-5 py-3">
-                                            <div className="flex items-center gap-3">
-                                                <img src={user.avatar} alt={user.name} className="w-8 h-8 rounded-full border border-border-dark" />
-                                                <div>
-                                                    <p className="font-bold text-gray-900 dark:text-white">{user.name}</p>
-                                                    <p className="text-xs text-text-muted">{user.email}</p>
-                                                </div>
-                                            </div>
-                                        </td>
-                                        <td className="px-5 py-3 text-gray-400">{user.role}</td>
-                                        <td className="px-5 py-3">
-                                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
-                                                user.status === 'Active' ? 'bg-green-500/10 text-green-500' : 'bg-gray-500/10 text-gray-500'
-                                            }`}>
-                                                {user.status}
-                                            </span>
-                                        </td>
-                                        <td className="px-5 py-3 text-gray-500 text-xs">{user.lastActive}</td>
-                                        <td className="px-5 py-3 text-right">
-                                            <button onClick={() => handleDeleteUser(user.id)} className="text-gray-500 hover:text-red-500 transition-colors">
-                                                <span className="material-symbols-outlined text-lg">delete</span>
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                {/* Audit Logs */}
-                <div className="bg-white dark:bg-surface-dark border border-border-dark rounded-xl shadow-sm p-5">
-                    <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-4">Audit Logs</h3>
-                    <div className="space-y-4">
-                        {AUDIT_LOGS.map(log => (
-                            <div key={log.id} className="flex gap-4 items-start p-3 rounded-lg bg-gray-50 dark:bg-black/20 border border-border-dark">
-                                <div className="p-2 rounded bg-surface-active text-text-muted">
-                                    <span className="material-symbols-outlined text-lg">history</span>
-                                </div>
-                                <div>
-                                    <p className="text-sm font-bold text-white">{log.action} <span className="text-text-muted font-normal">by {log.user}</span></p>
-                                    <p className="text-xs text-gray-500 mt-0.5">{log.details}</p>
-                                </div>
-                                <div className="ml-auto text-xs text-gray-500 whitespace-nowrap">{log.time}</div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-             </div>
-
-             {/* Add User Modal */}
-             {showUserModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-                    <div className="bg-[#1c271f] w-full max-w-md rounded-2xl border border-border-dark p-6">
-                        <h3 className="text-lg font-bold text-white mb-4">Add New User</h3>
-                        <form onSubmit={handleAddUser} className="flex flex-col gap-4">
-                            <input 
-                                className="bg-surface-active border border-border-dark rounded-lg px-3 py-2 text-white" 
-                                placeholder="Full Name" 
-                                value={newUser.name}
-                                onChange={e => setNewUser({...newUser, name: e.target.value})}
-                                required
-                            />
-                             <input 
-                                className="bg-surface-active border border-border-dark rounded-lg px-3 py-2 text-white" 
-                                placeholder="Email Address" 
-                                type="email"
-                                value={newUser.email}
-                                onChange={e => setNewUser({...newUser, email: e.target.value})}
-                                required
-                            />
-                            <select 
-                                className="bg-surface-active border border-border-dark rounded-lg px-3 py-2 text-white"
-                                value={newUser.role}
-                                onChange={e => setNewUser({...newUser, role: e.target.value})}
-                            >
-                                <option value="Analyst">Analyst</option>
-                                <option value="Field Ops">Field Ops</option>
-                                <option value="Admin">Admin</option>
-                            </select>
-                            <div className="flex gap-2 mt-2">
-                                <button type="button" onClick={() => setShowUserModal(false)} className="flex-1 py-2 rounded bg-surface-active text-white">Cancel</button>
-                                <button type="submit" className="flex-1 py-2 rounded bg-primary text-black font-bold">Add User</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-             )}
-        </div>
-    );
-};
-
-const HealthCard = ({ title, value, status, icon, detail }: any) => {
-    const colors = status === 'good' ? 'text-primary' : status === 'warning' ? 'text-orange-500' : 'text-red-500';
-    return (
-        <div className="bg-white dark:bg-surface-dark border border-border-dark rounded-xl p-5 flex items-center gap-4">
-            <div className={`p-3 rounded-lg bg-surface-active ${colors}`}>
-                <span className="material-symbols-outlined text-2xl">{icon}</span>
+                          {dataset.exists ? "FOUND" : "MISSING"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                  {!datasetRows.length && (
+                    <tr>
+                      <td className="py-6 text-sm text-text-muted" colSpan={5}>
+                        Dataset catalog is loading.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
-            <div>
-                <p className="text-xs text-text-muted uppercase font-bold">{title}</p>
-                <p className="text-xl font-bold text-white">{value}</p>
-                <p className={`text-xs ${colors}`}>{detail}</p>
-            </div>
-        </div>
-    );
-};
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
 
-export default Admin;
+function StatusCard({
+  title,
+  value,
+  detail,
+  icon,
+  tone,
+}: {
+  title: string;
+  value: string;
+  detail: string;
+  icon: string;
+  tone: keyof typeof statusTone;
+}) {
+  return (
+    <div className="rounded-lg border border-border-dark bg-[#111813] p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wide text-text-muted">
+            {title}
+          </p>
+          <p className="mt-2 text-2xl font-bold text-white">{value}</p>
+          <p className="mt-1 text-xs text-text-muted">{detail}</p>
+        </div>
+        <div className={`rounded-lg border p-2 ${statusTone[tone]}`}>
+          <span className="material-symbols-outlined text-xl">{icon}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
