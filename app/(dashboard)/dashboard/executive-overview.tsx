@@ -1,250 +1,409 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  AreaChart,
-  Area,
-  XAxis,
-  Tooltip,
-  ResponsiveContainer,
+  Bar,
+  BarChart,
   CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
+import {
+  AlertTriangle,
+  BarChart3,
+  Bolt,
+  BrainCircuit,
+  Download,
+  FileText,
+  RefreshCw,
+  ShieldAlert,
+  TrendingUp,
+  WalletCards,
+} from "lucide-react";
 import { fetchInsights } from "@/services/insights";
+import { fetchLatestLiveResults } from "@/services/powergrid";
 import { downloadReportPdf, generateReport } from "@/services/reports";
 import type { Insight } from "@/types/ai";
+import type {
+  LiveAnalysisResultsResponse,
+  LiveGroupAnalysisResult,
+} from "@/types/powergrid";
 
-const generate30DayTrend = () => {
-  const data = [];
-  const today = new Date();
-  for (let i = 29; i >= 0; i--) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
+type LoadState = "loading" | "ready" | "empty" | "error";
 
-    const trendFactor = 1 + (30 - i) / 100;
-    const baseSupplied = (40 + Math.random() * 15) * trendFactor;
-
-    let efficiency = 0.7 + Math.random() * 0.15;
-    if (i >= 14 && i <= 16) efficiency = 0.55;
-    if (i >= 2 && i <= 4) efficiency = 0.6;
-
-    const billed = baseSupplied * efficiency;
-
-    data.push({
-      date: date.toLocaleDateString("en-US", {
-        month: "short",
-        day: "numeric",
-      }),
-      supplied: parseFloat(baseSupplied.toFixed(1)),
-      billed: parseFloat(billed.toFixed(1)),
-    });
-  }
-  return data;
+type DashboardSummary = {
+  deliveredKwh: number;
+  consumedKwh: number;
+  lossKwh: number;
+  lossRatio: number;
+  flaggedConsumers: number;
+  highRiskConsumers: number;
+  averageRisk: number;
+  averageConfidence: number;
+  eventCount: number;
+  aggregateLevel: string;
 };
-
-const REAL_TREND_DATA = generate30DayTrend();
 
 const FALLBACK_INSIGHTS: Insight[] = [
   {
     type: "Alert",
-    text: "15% drop in billing efficiency detected in North District over last 48h.",
-    action: "View",
-  },
-  {
-    type: "Anomaly",
-    text: "Transformer T-409 load mismatch suggests meter bypass.",
-    action: "Investigate",
+    text: "No live grouped-analysis result is available yet. Start the backend cycle and refresh this dashboard.",
+    action: null,
   },
   {
     type: "Trend",
-    text: "Recovery trend in South Zone exceeds forecast by 8%.",
+    text: "Once `/analysis/live/results/latest` returns data, this panel will summarize the latest risk drivers.",
     action: null,
   },
 ];
 
-const KPICard = ({
+const RISK_CLASSES = {
+  critical: "border-red-500/30 bg-red-500/10 text-red-200",
+  high: "border-orange-500/30 bg-orange-500/10 text-orange-200",
+  medium: "border-amber-500/30 bg-amber-500/10 text-amber-100",
+  normal: "border-emerald-500/25 bg-emerald-500/10 text-emerald-200",
+};
+
+function normalizeLevel(level: string) {
+  return level.toLowerCase().trim();
+}
+
+function levelMatches(result: LiveGroupAnalysisResult, level: string) {
+  const normalized = normalizeLevel(result.asset_level);
+  if (level === "consumer") {
+    return normalized === "consumer" || normalized === "node";
+  }
+  return normalized === level;
+}
+
+function selectAggregateResults(results: LiveGroupAnalysisResult[]) {
+  for (const level of ["region", "feeder", "transformer", "consumer"]) {
+    const matches = results.filter((result) => levelMatches(result, level));
+    if (matches.length) {
+      return { level, results: matches };
+    }
+  }
+  return { level: "result", results };
+}
+
+function sumBy(
+  results: LiveGroupAnalysisResult[],
+  field: keyof Pick<
+    LiveGroupAnalysisResult,
+    | "event_count"
+    | "total_power_delivered_kwh"
+    | "total_energy_consumed_kwh"
+    | "total_loss_estimate_kwh"
+  >
+) {
+  return results.reduce((sum, result) => sum + Number(result[field] || 0), 0);
+}
+
+function averageBy(
+  results: LiveGroupAnalysisResult[],
+  field: keyof Pick<
+    LiveGroupAnalysisResult,
+    "theft_risk_score" | "confidence_score"
+  >
+) {
+  if (!results.length) return 0;
+  return (
+    results.reduce((sum, result) => sum + Number(result[field] || 0), 0) /
+    results.length
+  );
+}
+
+function summarizeResults(
+  payload: LiveAnalysisResultsResponse | null
+): DashboardSummary {
+  const allResults = payload?.results ?? [];
+  const aggregate = selectAggregateResults(allResults);
+  const consumerResults = allResults.filter((result) =>
+    levelMatches(result, "consumer")
+  );
+  const deliveredKwh = sumBy(aggregate.results, "total_power_delivered_kwh");
+  const consumedKwh = sumBy(aggregate.results, "total_energy_consumed_kwh");
+  const lossKwh = sumBy(aggregate.results, "total_loss_estimate_kwh");
+  const flaggedConsumers = consumerResults.filter(
+    (result) => result.predicted_meter_bypass || result.anomaly_detected
+  ).length;
+  const highRiskConsumers = consumerResults.filter(
+    (result) => Number(result.theft_risk_score || 0) >= 0.7
+  ).length;
+
+  return {
+    deliveredKwh,
+    consumedKwh,
+    lossKwh,
+    lossRatio: deliveredKwh > 0 ? lossKwh / deliveredKwh : 0,
+    flaggedConsumers,
+    highRiskConsumers,
+    averageRisk: averageBy(consumerResults.length ? consumerResults : allResults, "theft_risk_score"),
+    averageConfidence: averageBy(allResults, "confidence_score"),
+    eventCount: sumBy(aggregate.results, "event_count"),
+    aggregateLevel: aggregate.level,
+  };
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(value >= 0.1 ? 1 : 2)}%`;
+}
+
+function formatEnergy(kwh: number) {
+  if (!Number.isFinite(kwh)) return "0 kWh";
+  const abs = Math.abs(kwh);
+  if (abs >= 1_000_000) return `${(kwh / 1_000_000).toFixed(2)} GWh`;
+  if (abs >= 1_000) return `${(kwh / 1_000).toFixed(2)} MWh`;
+  return `${kwh.toFixed(1)} kWh`;
+}
+
+function formatMoneyFromLoss(kwh: number) {
+  const estimatedUsd = kwh * 0.16;
+  if (estimatedUsd >= 1_000_000) return `$${(estimatedUsd / 1_000_000).toFixed(2)}M`;
+  if (estimatedUsd >= 1_000) return `$${(estimatedUsd / 1_000).toFixed(1)}k`;
+  return `$${estimatedUsd.toFixed(0)}`;
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return "Not available";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not available";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getRiskBand(score: number) {
+  if (score >= 0.85) return "critical";
+  if (score >= 0.7) return "high";
+  if (score >= 0.45) return "medium";
+  return "normal";
+}
+
+function getRegionRows(results: LiveGroupAnalysisResult[]) {
+  const regionResults = results.filter((result) => levelMatches(result, "region"));
+  const source = regionResults.length
+    ? regionResults
+    : results.filter((result) => levelMatches(result, "feeder")).slice(0, 8);
+
+  return source
+    .map((result) => ({
+      name: result.region || result.asset_id,
+      delivered: Number((result.total_power_delivered_kwh / 1_000).toFixed(2)),
+      consumed: Number((result.total_energy_consumed_kwh / 1_000).toFixed(2)),
+      loss: Number((result.total_loss_estimate_kwh / 1_000).toFixed(2)),
+      risk: result.theft_risk_score,
+    }))
+    .sort((a, b) => b.loss - a.loss)
+    .slice(0, 8);
+}
+
+function getTopCases(results: LiveGroupAnalysisResult[]) {
+  return results
+    .filter((result) => levelMatches(result, "consumer"))
+    .sort((a, b) => {
+      const riskDelta = b.theft_risk_score - a.theft_risk_score;
+      if (riskDelta !== 0) return riskDelta;
+      return b.total_loss_estimate_kwh - a.total_loss_estimate_kwh;
+    })
+    .slice(0, 8);
+}
+
+function getLatestAnalyzedAt(results: LiveGroupAnalysisResult[]) {
+  return results
+    .map((result) => result.analyzed_at)
+    .sort()
+    .at(-1);
+}
+
+function getModelDetails(results: LiveGroupAnalysisResult[]) {
+  return results.find((result) => result.model_details)?.model_details ?? null;
+}
+
+function KpiCard({
   title,
   value,
-  unit,
-  trend,
-  icon,
-  isDanger,
+  detail,
+  icon: Icon,
+  tone = "neutral",
 }: {
   title: string;
   value: string;
-  unit?: string;
-  trend: string;
-  icon: string;
-  isDanger?: boolean;
-}) => (
-  <div
-    className={`bg-white dark:bg-surface-dark rounded-xl p-4 border ${
-      isDanger
-        ? "border-danger/30 relative overflow-hidden"
-        : "border-border-dark"
-    } shadow-sm`}
-  >
-    {isDanger && <div className="absolute inset-y-0 left-0 w-1 bg-danger" />}
-    <div
-      className={`flex justify-between items-start mb-2 ${
-        isDanger ? "pl-2" : ""
-      }`}
-    >
-      <p className="text-xs font-medium text-text-muted uppercase tracking-wide">
-        {title}
-      </p>
-      <span
-        className={`material-symbols-outlined text-[20px] ${
-          isDanger ? "text-danger" : "text-primary"
-        }`}
-      >
-        {icon}
-      </span>
+  detail: string;
+  icon: React.ComponentType<{ className?: string }>;
+  tone?: "neutral" | "risk" | "success" | "warning";
+}) {
+  const toneClass = {
+    neutral: "border-white/10 bg-[#101a17] text-emerald-300",
+    risk: "border-red-500/25 bg-red-500/10 text-red-300",
+    success: "border-emerald-500/25 bg-emerald-500/10 text-emerald-300",
+    warning: "border-amber-500/25 bg-amber-500/10 text-amber-200",
+  }[tone];
+
+  return (
+    <section className={`rounded-lg border p-4 shadow-sm ${toneClass}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase text-slate-400">
+            {title}
+          </p>
+          <p className="mt-2 truncate text-2xl font-bold text-white">{value}</p>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-2">
+          <Icon className="h-5 w-5" />
+        </div>
+      </div>
+      <p className="mt-3 text-xs text-slate-400">{detail}</p>
+    </section>
+  );
+}
+
+function StatusPill({ label, tone }: { label: string; tone: keyof typeof RISK_CLASSES }) {
+  return (
+    <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${RISK_CLASSES[tone]}`}>
+      {label}
+    </span>
+  );
+}
+
+function EmptyState({
+  state,
+  message,
+  onRefresh,
+}: {
+  state: LoadState;
+  message: string;
+  onRefresh: () => void;
+}) {
+  const isLoading = state === "loading";
+
+  return (
+    <div className="flex min-h-[520px] items-center justify-center bg-[#0b1110] p-6">
+      <div className="w-full max-w-2xl rounded-lg border border-white/10 bg-[#101a17] p-6 text-center shadow-xl">
+        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-200">
+          {isLoading ? (
+            <RefreshCw className="h-6 w-6 animate-spin" />
+          ) : (
+            <AlertTriangle className="h-6 w-6" />
+          )}
+        </div>
+        <h1 className="mt-4 text-xl font-bold text-white">
+          {isLoading ? "Loading live analysis" : "No live analysis to show"}
+        </h1>
+        <p className="mx-auto mt-2 max-w-lg text-sm text-slate-400">{message}</p>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="mt-5 inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-bold text-black hover:bg-primary-hover"
+        >
+          <RefreshCw className="h-4 w-4" />
+          Refresh
+        </button>
+      </div>
     </div>
-    <div className={`flex items-baseline gap-2 ${isDanger ? "pl-2" : ""}`}>
-      <h3 className="text-2xl font-bold text-gray-900 dark:text-white">
-        {value}{" "}
-        {unit && (
-          <span className="text-sm font-normal text-gray-500">{unit}</span>
-        )}
-      </h3>
-    </div>
-    <div
-      className={`flex items-center gap-1 mt-2 text-xs font-medium w-fit px-1.5 py-0.5 rounded ${
-        isDanger
-          ? "pl-2 text-danger bg-danger/10"
-          : "text-primary bg-primary/10"
-      }`}
-    >
-      <span className="material-symbols-outlined text-[14px]">trending_up</span>
-      <span>{trend}</span>
-    </div>
-  </div>
-);
+  );
+}
 
 const InsightItem = ({ text, action, type }: Insight) => (
-  <div className="flex flex-col gap-2">
-    <p className="text-sm font-medium text-gray-800 dark:text-gray-200 leading-snug">
+  <div className="rounded-lg border border-white/10 bg-black/20 p-3">
+    <p className="text-sm leading-snug text-slate-200">
       <span
-        className={`${
+        className={
           type === "Alert"
-            ? "text-danger"
+            ? "font-bold text-red-300"
             : type === "Anomaly"
-            ? "text-warning"
-            : "text-primary"
-        } font-bold`}
+              ? "font-bold text-amber-200"
+              : "font-bold text-emerald-300"
+        }
       >
         {type}:
       </span>{" "}
       {text}
     </p>
     {action && (
-      <button className="text-xs font-semibold text-primary hover:text-primary/80 flex items-center gap-1 transition-colors w-fit group">
-        {action}{" "}
-        <span className="material-symbols-outlined text-[14px] group-hover:translate-x-1 transition-transform">
-          arrow_forward
-        </span>
-      </button>
+      <p className="mt-2 text-xs font-semibold text-emerald-300">{action}</p>
     )}
   </div>
 );
 
-const RegionBar = ({
-  region,
-  percentage,
-  color,
-}: {
-  region: string;
-  percentage: number;
-  color: string;
-}) => (
-  <div className="space-y-1">
-    <div className="flex justify-between text-xs text-gray-400">
-      <span>{region}</span>
-      <span className={`${color.replace("bg-", "text-")} font-bold`}>
-        {percentage}%
-      </span>
-    </div>
-    <div className="w-full bg-gray-100 dark:bg-black/30 rounded-full h-2">
-      <div
-        className={`${color} h-2 rounded-full`}
-        style={{ width: `${percentage}%` }}
-      />
-    </div>
-  </div>
-);
-
-const PipelineStage = ({
-  stage,
-  count,
-  colorClass,
-  width = "100%",
-}: {
-  stage: string;
-  count: number;
-  colorClass: string;
-  width?: string;
-}) => (
-  <div
-    className={`bg-gray-100 dark:bg-surface-dark border border-gray-200 dark:border-border-dark rounded p-2 flex justify-between items-center relative overflow-hidden`}
-    style={{ width }}
-  >
-    <div className={`absolute inset-y-0 left-0 w-full z-0 ${colorClass}`} />
-    <span className="relative z-10 text-xs font-medium text-gray-700 dark:text-gray-300 ml-2">
-      {stage}
-    </span>
-    <span className="relative z-10 text-xs font-bold text-gray-900 dark:text-white mr-2">
-      {count}
-    </span>
-  </div>
-);
-
 export default function ExecutiveOverview() {
-  const [insights, setInsights] = useState<Insight[]>([]);
-  const [isLoadingInsights, setIsLoadingInsights] = useState(true);
+  const [payload, setPayload] = useState<LiveAnalysisResultsResponse | null>(null);
+  const [state, setState] = useState<LoadState>("loading");
+  const [message, setMessage] = useState("Connecting to the Powergrid API.");
+  const [insights, setInsights] = useState<Insight[]>(FALLBACK_INSIGHTS);
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportContent, setReportContent] = useState("");
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
-  const totals = React.useMemo(() => {
-    const supplied = REAL_TREND_DATA.reduce(
-      (sum, item) => sum + item.supplied,
-      0
-    );
-    const billed = REAL_TREND_DATA.reduce((sum, item) => sum + item.billed, 0);
-    const loss = supplied - billed;
-    return { supplied, billed, loss };
+  const results = payload?.results ?? [];
+  const summary = useMemo(() => summarizeResults(payload), [payload]);
+  const regionRows = useMemo(() => getRegionRows(results), [results]);
+  const topCases = useMemo(() => getTopCases(results), [results]);
+  const modelDetails = useMemo(() => getModelDetails(results), [results]);
+  const latestAnalyzedAt = useMemo(() => getLatestAnalyzedAt(results), [results]);
+
+  const loadResults = async () => {
+    setState("loading");
+    setMessage("Connecting to the Powergrid API.");
+    try {
+      const response = await fetchLatestLiveResults();
+      if (response.success && response.data && response.data.result_count > 0) {
+        setPayload(response.data);
+        setState("ready");
+        setMessage("Latest grouped-analysis results loaded.");
+        return;
+      }
+      setPayload(null);
+      setState("empty");
+      setMessage(response.message || "No stored grouped-analysis results found yet.");
+    } catch (error) {
+      setPayload(null);
+      setState("error");
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to load latest grouped-analysis results."
+      );
+    }
+  };
+
+  useEffect(() => {
+    loadResults();
   }, []);
 
   useEffect(() => {
-    loadInsights();
-  }, []);
+    if (state !== "ready" || !payload) return;
 
-  const loadInsights = async () => {
-    setIsLoadingInsights(true);
-    try {
-      const res = await fetchInsights({
-        metrics: {
-          energySuppliedMWh: Number(totals.supplied.toFixed(1)),
-          energyBilledMWh: Number(totals.billed.toFixed(1)),
-          revenueLossUSD: Number((totals.loss * 120).toFixed(0)), // rough $/MWh placeholder
-          theftCases: 142,
-          recoveryUSD: 1.8 * 1_000_000,
-          period: "Last 30 Days",
-        },
-      });
-      if (res.success && res.data) {
-        setInsights(res.data);
-      } else {
+    async function loadInsights() {
+      setIsLoadingInsights(true);
+      try {
+        const response = await fetchInsights({
+          metrics: {
+            energySuppliedMWh: Number((summary.deliveredKwh / 1_000).toFixed(2)),
+            energyBilledMWh: Number((summary.consumedKwh / 1_000).toFixed(2)),
+            revenueLossUSD: Number((summary.lossKwh * 0.16).toFixed(0)),
+            theftCases: summary.flaggedConsumers,
+            recoveryUSD: 0,
+            period: "Latest live batch",
+          },
+        });
+        setInsights(response.success && response.data ? response.data : FALLBACK_INSIGHTS);
+      } catch {
         setInsights(FALLBACK_INSIGHTS);
+      } finally {
+        setIsLoadingInsights(false);
       }
-    } catch (error) {
-      console.error("Failed to fetch insights", error);
-      setInsights(FALLBACK_INSIGHTS);
-    } finally {
-      setIsLoadingInsights(false);
     }
-  };
+
+    loadInsights();
+  }, [payload, state, summary.consumedKwh, summary.deliveredKwh, summary.flaggedConsumers, summary.lossKwh]);
 
   const handleGenerateFullReport = async () => {
     setShowReportModal(true);
@@ -252,25 +411,30 @@ export default function ExecutiveOverview() {
     setIsGeneratingReport(true);
 
     try {
-      const res = await generateReport({
-        period: "Last 30 Days",
+      const response = await generateReport({
+        period: "Latest live grouped-analysis batch",
         metrics: {
-          supplied: Number(totals.supplied.toFixed(1)),
-          billed: Number(totals.billed.toFixed(1)),
-          loss: Number(totals.loss.toFixed(1)),
-          theftCases: 142,
-          recovery: 1.8,
+          jobId: payload?.job_id,
+          resultCount: payload?.result_count,
+          deliveredKwh: summary.deliveredKwh,
+          consumedKwh: summary.consumedKwh,
+          lossKwh: summary.lossKwh,
+          lossRatio: summary.lossRatio,
+          flaggedConsumers: summary.flaggedConsumers,
+          highRiskConsumers: summary.highRiskConsumers,
+          averageRisk: summary.averageRisk,
+          modelStrategy: modelDetails?.inference_strategy,
         },
       });
 
-      if (res.success && res.data) {
-        setReportContent(res.data.markdown);
-      } else {
-        setReportContent("## Unable to generate report\nPlease try again.");
-      }
-    } catch (error) {
       setReportContent(
-        "## Error Generating Report\nUnable to connect to AI service. Please try again later."
+        response.success && response.data
+          ? response.data.markdown
+          : "## Unable to generate report\nPlease try again."
+      );
+    } catch {
+      setReportContent(
+        "## Error Generating Report\nUnable to connect to the AI report service. Please try again later."
       );
     } finally {
       setIsGeneratingReport(false);
@@ -281,409 +445,305 @@ export default function ExecutiveOverview() {
     if (!reportContent) return;
     setIsDownloadingPdf(true);
     try {
-      const blob = await downloadReportPdf(reportContent, "Executive Report");
+      const blob = await downloadReportPdf(reportContent, "Powergrid Executive Report");
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "executive-report.pdf";
+      link.download = "powergrid-executive-report.pdf";
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error("Failed to download PDF", error);
     } finally {
       setIsDownloadingPdf(false);
     }
   };
 
+  if (state !== "ready") {
+    return <EmptyState state={state} message={message} onRefresh={loadResults} />;
+  }
+
   return (
-    <div className="flex-1 overflow-y-auto p-6 lg:px-8 pb-20 scroll-smooth bg-background-light dark:bg-background-dark relative">
-      <div className="max-w-[1600px] mx-auto flex flex-col gap-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-          <KPICard
-            title="Total Energy Supplied"
-            value="1,245"
-            unit="GWh"
-            trend="+4.2%"
-            icon="bolt"
-          />
-          <KPICard
-            title="Total Energy Billed"
-            value="890"
-            unit="GWh"
-            trend="+1.8%"
-            icon="receipt_long"
-          />
-          <KPICard
-            title="Non-Tech Loss"
-            value="28.5%"
-            trend="2.4% vs last mo"
-            icon="warning"
-            isDanger
-          />
-          <KPICard
-            title="Est. Revenue Loss"
-            value="$4.2M"
-            trend="High Risk"
-            icon="money_off"
-            isDanger
-          />
-          <div className="bg-white dark:bg-surface-dark rounded-xl p-4 border border-border-dark shadow-sm">
-            <div className="flex justify-between items-start mb-2">
-              <p className="text-xs font-medium text-text-muted uppercase tracking-wide">
-                Theft Cases Detected
-              </p>
-              <span className="material-symbols-outlined text-warning text-[20px]">
-                policy
-              </span>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <h3 className="text-2xl font-bold text-gray-900 dark:text-white">
-                142
-              </h3>
-            </div>
-            <div className="flex items-center gap-1 mt-2 text-xs font-medium text-text-muted">
-              <span className="text-primary font-bold">+12</span> this week
-            </div>
-          </div>
-          <div className="bg-white dark:bg-surface-dark rounded-xl p-4 border border-border-dark shadow-sm">
-            <div className="flex justify-between items-start mb-2">
-              <p className="text-xs font-medium text-text-muted uppercase tracking-wide">
-                Recovery Progress
-              </p>
-              <span className="material-symbols-outlined text-primary text-[20px]">
-                savings
-              </span>
-            </div>
-            <div className="flex items-baseline gap-2">
-              <h3 className="text-2xl font-bold text-gray-900 dark:text-white">
-                $1.8M
-              </h3>
-            </div>
-            <div className="w-full bg-gray-200 dark:bg-black/40 rounded-full h-1.5 mt-3">
-              <div
-                className="bg-primary h-1.5 rounded-full"
-                style={{ width: "65%" }}
+    <main className="flex-1 overflow-y-auto bg-[#0b1110] p-5 pb-20 lg:p-6">
+      <div className="mx-auto flex max-w-[1600px] flex-col gap-5">
+        <header className="flex flex-col gap-4 border-b border-white/10 pb-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusPill label="Live API" tone="normal" />
+              <StatusPill
+                label={modelDetails?.artifact_available ? "Model artifact" : "Heuristic fallback"}
+                tone={modelDetails?.artifact_available ? "normal" : "medium"}
               />
             </div>
-            <p className="text-[10px] text-gray-500 mt-1 text-right">
-              65% of Target
+            <h1 className="mt-3 text-2xl font-bold text-white">
+              Powergrid Revenue Assurance
+            </h1>
+            <p className="mt-1 text-sm text-slate-400">
+              Latest job {payload?.job_id.slice(0, 10)} · analyzed {formatDateTime(latestAnalyzedAt)}
             </p>
           </div>
-        </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={loadResults}
+              className="inline-flex items-center justify-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm font-semibold text-white hover:bg-white/10"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={handleGenerateFullReport}
+              className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-bold text-black hover:bg-primary-hover"
+            >
+              <FileText className="h-4 w-4" />
+              Executive report
+            </button>
+          </div>
+        </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-auto">
-          <div className="lg:col-span-2 bg-white dark:bg-surface-dark rounded-xl border border-border-dark p-6 flex flex-col shadow-sm">
-            <div className="flex justify-between items-center mb-6">
+        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+          <KpiCard
+            title="Delivered"
+            value={formatEnergy(summary.deliveredKwh)}
+            detail={`${summary.eventCount.toLocaleString()} events at ${summary.aggregateLevel} level`}
+            icon={Bolt}
+            tone="neutral"
+          />
+          <KpiCard
+            title="Consumed"
+            value={formatEnergy(summary.consumedKwh)}
+            detail="Customer-side energy observed"
+            icon={BarChart3}
+            tone="success"
+          />
+          <KpiCard
+            title="Loss Estimate"
+            value={formatEnergy(summary.lossKwh)}
+            detail={`${formatPercent(summary.lossRatio)} of delivered energy`}
+            icon={ShieldAlert}
+            tone="risk"
+          />
+          <KpiCard
+            title="Revenue Exposure"
+            value={formatMoneyFromLoss(summary.lossKwh)}
+            detail="Estimated at $0.16/kWh"
+            icon={WalletCards}
+            tone="warning"
+          />
+          <KpiCard
+            title="Bypass Flags"
+            value={summary.flaggedConsumers.toLocaleString()}
+            detail={`${summary.highRiskConsumers.toLocaleString()} high-risk consumers`}
+            icon={AlertTriangle}
+            tone="risk"
+          />
+          <KpiCard
+            title="Average Risk"
+            value={formatPercent(summary.averageRisk)}
+            detail={`${formatPercent(summary.averageConfidence)} avg confidence`}
+            icon={TrendingUp}
+            tone="neutral"
+          />
+        </section>
+
+        <section className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+          <div className="xl:col-span-2 rounded-lg border border-white/10 bg-[#101a17] p-5 shadow-sm">
+            <div className="mb-5 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h2 className="text-lg font-bold text-gray-900 dark:text-white">
-                  Energy Supplied vs. Billed
-                </h2>
-                <p className="text-sm text-text-muted">
-                  30-day Trend Analysis (GWh)
+                <h2 className="text-lg font-bold text-white">Regional Energy Balance</h2>
+                <p className="text-sm text-slate-400">
+                  Supplied, consumed, and estimated loss by latest aggregate group.
                 </p>
               </div>
-              <div className="flex items-center gap-4 text-xs font-medium">
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-primary/20 border border-primary" />
-                  <span className="text-gray-600 dark:text-gray-300">
-                    Supplied
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full bg-blue-500/20 border border-blue-500" />
-                  <span className="text-gray-600 dark:text-gray-300">
-                    Billed
-                  </span>
-                </div>
-              </div>
+              <span className="text-xs font-semibold text-slate-400">MWh</span>
             </div>
-
-            <div className="flex-1 w-full h-full min-h-[250px]">
+            <div className="h-[340px]">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart
-                  data={REAL_TREND_DATA}
-                  margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                >
-                  <defs>
-                    <linearGradient
-                      id="colorSupplied"
-                      x1="0"
-                      y1="0"
-                      x2="0"
-                      y2="1"
-                    >
-                      <stop offset="5%" stopColor="#11d452" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#11d452" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient
-                      id="colorBilled"
-                      x1="0"
-                      y1="0"
-                      x2="0"
-                      y2="1"
-                    >
-                      <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="#28392e"
-                    vertical={false}
-                  />
-                  <XAxis
-                    dataKey="date"
-                    tick={{ fill: "#9db9a6", fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    minTickGap={30}
-                  />
+                <BarChart data={regionRows} margin={{ top: 10, right: 8, left: -12, bottom: 0 }}>
+                  <CartesianGrid stroke="#203028" strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fill: "#9db9a6", fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: "#9db9a6", fontSize: 11 }} axisLine={false} tickLine={false} />
                   <Tooltip
+                    cursor={{ fill: "rgba(255,255,255,0.04)" }}
                     contentStyle={{
-                      backgroundColor: "#1c271f",
-                      border: "1px solid #28392e",
+                      backgroundColor: "#101a17",
+                      border: "1px solid rgba(255,255,255,0.12)",
                       borderRadius: "8px",
-                      fontSize: "12px",
+                      color: "#fff",
                     }}
-                    itemStyle={{ color: "#fff" }}
-                    labelStyle={{ color: "#9db9a6", marginBottom: "5px" }}
                   />
-                  <Area
-                    type="monotone"
-                    dataKey="supplied"
-                    stroke="#11d452"
-                    fillOpacity={1}
-                    fill="url(#colorSupplied)"
-                    strokeWidth={2}
-                    name="Supplied (GWh)"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="billed"
-                    stroke="#3b82f6"
-                    fillOpacity={1}
-                    fill="url(#colorBilled)"
-                    strokeWidth={2}
-                    name="Billed (GWh)"
-                  />
-                </AreaChart>
+                  <Bar dataKey="delivered" name="Delivered" fill="#38bdf8" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="consumed" name="Consumed" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="loss" name="Loss" fill="#f97316" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          <div className="lg:col-span-1 bg-surface-dark/5 dark:bg-gradient-to-br dark:from-surface-dark dark:to-background-dark rounded-xl border border-primary/30 p-1 flex flex-col relative shadow-[0_0_15px_-5px_rgba(17,212,82,0.1)]">
-            <div className="bg-gradient-to-r from-primary/10 to-transparent p-5 rounded-t-lg border-b border-primary/10 flex items-center justify-between">
+          <aside className="rounded-lg border border-white/10 bg-[#101a17] shadow-sm">
+            <div className="flex items-center justify-between border-b border-white/10 p-4">
               <div className="flex items-center gap-2">
-                <span
-                  className={`material-symbols-outlined text-primary ${
-                    isLoadingInsights ? "animate-spin" : ""
-                  }`}
-                >
-                  {isLoadingInsights ? "sync" : "auto_awesome"}
-                </span>
-                <h2 className="text-lg font-bold text-gray-900 dark:text-white">
-                  AI Insights
-                </h2>
+                <BrainCircuit className={`h-5 w-5 text-primary ${isLoadingInsights ? "animate-pulse" : ""}`} />
+                <h2 className="text-lg font-bold text-white">Analysis Notes</h2>
               </div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-primary bg-primary/10 px-2 py-1 rounded flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />{" "}
-                Live
+              <span className="rounded-md border border-primary/20 bg-primary/10 px-2 py-1 text-xs font-bold text-primary">
+                Latest
               </span>
             </div>
+            <div className="flex flex-col gap-3 p-4">
+              {insights.map((insight, index) => (
+                <InsightItem key={`${insight.type}-${index}`} {...insight} />
+              ))}
+            </div>
+            <div className="border-t border-white/10 p-4 text-xs text-slate-400">
+              Model strategy:{" "}
+              <span className="font-semibold text-slate-200">
+                {modelDetails?.inference_strategy ?? "Not reported"}
+              </span>
+            </div>
+          </aside>
+        </section>
 
-            <div className="p-5 flex-1 flex flex-col gap-5 overflow-y-auto">
-              {isLoadingInsights ? (
-                <div className="flex flex-col gap-4 animate-pulse">
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="space-y-2">
-                      <div className="h-4 bg-gray-200 dark:bg-white/5 rounded w-3/4" />
-                      <div className="h-3 bg-gray-200 dark:bg-white/5 rounded w-1/2" />
-                    </div>
-                  ))}
+        <section className="grid grid-cols-1 gap-5 xl:grid-cols-3">
+          <div className="xl:col-span-2 rounded-lg border border-white/10 bg-[#101a17] shadow-sm">
+            <div className="flex items-center justify-between border-b border-white/10 p-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Top Suspected Bypass Cases</h2>
+                <p className="text-sm text-slate-400">Consumer-level results ranked by risk and loss.</p>
+              </div>
+              <span className="rounded-md bg-white/5 px-2 py-1 text-xs font-semibold text-slate-300">
+                {topCases.length} shown
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-left text-sm">
+                <thead className="border-b border-white/10 text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">Consumer</th>
+                    <th className="px-4 py-3 font-semibold">Network</th>
+                    <th className="px-4 py-3 font-semibold">Risk</th>
+                    <th className="px-4 py-3 font-semibold">Loss</th>
+                    <th className="px-4 py-3 font-semibold">Evidence</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/10">
+                  {topCases.map((result) => {
+                    const riskBand = getRiskBand(result.theft_risk_score);
+                    return (
+                      <tr key={`${result.job_id}-${result.asset_id}`} className="hover:bg-white/[0.03]">
+                        <td className="px-4 py-3">
+                          <p className="font-semibold text-white">
+                            {result.customer_id || result.asset_id}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {result.service_point_id || "No service point"}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3 text-slate-300">
+                          <p>{result.region || "Unknown region"}</p>
+                          <p className="text-xs text-slate-500">
+                            {result.feeder_id || "No feeder"} · {result.transformer_id || "No transformer"}
+                          </p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusPill label={formatPercent(result.theft_risk_score)} tone={riskBand} />
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-orange-200">
+                          {formatEnergy(result.total_loss_estimate_kwh)}
+                        </td>
+                        <td className="px-4 py-3 text-slate-300">
+                          <p>{result.score_source}</p>
+                          <p className="text-xs text-slate-500">
+                            {result.predicted_meter_bypass ? "Predicted bypass" : "Anomaly review"}
+                          </p>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!topCases.length && (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-10 text-center text-sm text-slate-400">
+                        No consumer-level bypass cases are present in the latest result set.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-[#101a17] p-5 shadow-sm">
+            <h2 className="text-lg font-bold text-white">Runtime Snapshot</h2>
+            <div className="mt-4 space-y-3 text-sm">
+              <RuntimeRow label="Result database" value={payload?.result_db ?? "Unknown"} />
+              <RuntimeRow label="Collection" value={payload?.result_collection ?? "Unknown"} />
+              <RuntimeRow label="Result count" value={(payload?.result_count ?? 0).toLocaleString()} />
+              <RuntimeRow label="Model name" value={modelDetails?.model_name ?? "Unknown"} />
+              <RuntimeRow label="Model version" value={modelDetails?.model_version ?? "Latest/heuristic"} />
+              <RuntimeRow
+                label="Runtime ready"
+                value={modelDetails?.runtime_ready ? "Yes" : "Fallback active"}
+              />
+              <RuntimeRow label="Threshold" value={modelDetails ? formatPercent(modelDetails.threshold) : "Unknown"} />
+            </div>
+          </div>
+        </section>
+      </div>
+
+      {showReportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="flex h-[80vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-white/10 bg-[#101a17] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 p-5">
+              <div>
+                <h2 className="text-xl font-bold text-white">Executive Revenue Report</h2>
+                <p className="text-xs text-slate-400">
+                  Generated from latest backend grouped-analysis results.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowReportModal(false)}
+                className="rounded-md border border-white/10 px-3 py-2 text-sm font-semibold text-slate-300 hover:bg-white/10"
+              >
+                Close
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 text-slate-200">
+              {isGeneratingReport ? (
+                <div className="flex h-full flex-col items-center justify-center gap-3 text-slate-300">
+                  <RefreshCw className="h-7 w-7 animate-spin text-primary" />
+                  <p className="text-sm font-medium">Generating report from live analysis...</p>
                 </div>
               ) : (
-                insights.map((insight, idx) => (
-                  <React.Fragment key={idx}>
-                    <InsightItem
-                      text={insight.text}
-                      action={insight.action}
-                      type={insight.type}
-                    />
-                    {idx < insights.length - 1 && (
-                      <hr className="border-border-dark/50" />
-                    )}
-                  </React.Fragment>
-                ))
+                <pre className="whitespace-pre-wrap font-sans text-sm leading-6">{reportContent}</pre>
               )}
             </div>
-
-            <div className="p-4 mt-auto border-t border-border-dark bg-gray-50 dark:bg-black/20 rounded-b-lg">
+            <div className="flex justify-end gap-3 border-t border-white/10 p-4">
               <button
-                onClick={handleGenerateFullReport}
-                className="w-full py-2 rounded-lg bg-white dark:bg-surface-dark border border-gray-200 dark:border-border-dark text-xs font-medium text-gray-600 dark:text-text-muted hover:text-primary dark:hover:text-white hover:border-primary/50 transition-colors flex items-center justify-center gap-2"
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={!reportContent || isGeneratingReport || isDownloadingPdf}
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-bold text-black hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span className="material-symbols-outlined text-base">
-                  summarize
-                </span>
-                Generate Full AI Report
+                <Download className="h-4 w-4" />
+                {isDownloadingPdf ? "Preparing..." : "Download PDF"}
               </button>
             </div>
           </div>
         </div>
+      )}
+    </main>
+  );
+}
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6">
-          <div className="bg-white dark:bg-surface-dark rounded-xl border border-border-dark p-5 shadow-sm">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-sm font-bold text-gray-900 dark:text-white">
-                Revenue Loss by Region
-              </h3>
-              <button className="text-gray-400 hover:text-white">
-                <span className="material-symbols-outlined text-[18px]">
-                  more_horiz
-                </span>
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 mt-2">
-              <RegionBar
-                region="North District"
-                percentage={32}
-                color="bg-danger"
-              />
-              <RegionBar
-                region="East Zone"
-                percentage={18}
-                color="bg-warning"
-              />
-              <RegionBar
-                region="South District"
-                percentage={12}
-                color="bg-primary"
-              />
-              <RegionBar
-                region="Central Grid"
-                percentage={8}
-                color="bg-primary"
-              />
-            </div>
-          </div>
-
-          <div className="bg-white dark:bg-surface-dark rounded-xl border border-border-dark p-5 shadow-sm">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-sm font-bold text-gray-900 dark:text-white">
-                Theft Cases Pipeline
-              </h3>
-              <button className="text-gray-400 hover:text-white">
-                <span className="material-symbols-outlined text-[18px]">
-                  filter_list
-                </span>
-              </button>
-            </div>
-            <div className="flex flex-col items-center gap-2">
-              <PipelineStage
-                stage="Detected"
-                count={142}
-                colorClass="bg-blue-500/10"
-              />
-              <div className="h-3 w-0.5 bg-border-dark" />
-              <PipelineStage
-                stage="Investigating"
-                count={89}
-                colorClass="bg-yellow-500/10"
-                width="85%"
-              />
-              <div className="h-3 w-0.5 bg-border-dark" />
-              <PipelineStage
-                stage="Confirmed"
-                count={54}
-                colorClass="bg-orange-500/10"
-                width="70%"
-              />
-              <div className="h-3 w-0.5 bg-border-dark" />
-              <div className="w-[55%] bg-primary shadow shadow-primary/20 rounded p-2 flex justify-between items-center text-white">
-                <span className="text-xs font-bold ml-2">Recovered</span>
-                <span className="text-xs font-bold mr-2">31</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {showReportModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
-            <div className="bg-background-light dark:bg-[#111813] w-full max-w-4xl h-[80vh] rounded-2xl shadow-2xl border border-border-dark flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between p-6 border-b border-border-dark bg-surface-dark/50">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary/10 rounded-lg">
-                    <span className="material-symbols-outlined text-primary">
-                      assignment_turned_in
-                    </span>
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-                      Executive Revenue Report
-                    </h2>
-                    <p className="text-xs text-text-muted">
-                      Generated by EDN AI (mock) ·{" "}
-                      {new Date().toLocaleDateString()}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowReportModal(false)}
-                  className="text-text-muted hover:text-white transition-colors"
-                >
-                  <span className="material-symbols-outlined">close</span>
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-8 font-sans text-gray-800 dark:text-gray-300 leading-relaxed">
-                {isGeneratingReport ? (
-                  <div className="flex flex-col items-center justify-center h-full gap-4">
-                    <span className="material-symbols-outlined text-4xl text-primary animate-spin">
-                      auto_awesome
-                    </span>
-                    <p className="text-sm font-medium animate-pulse">
-                      Analyzing grid data & generating report...
-                    </p>
-                  </div>
-                ) : (
-                  <div className="prose dark:prose-invert max-w-none">
-                    <div className="markdown-content whitespace-pre-line">
-                      {reportContent}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="p-4 border-t border-border-dark bg-surface-dark/30 flex justify-end gap-3">
-                <button
-                  onClick={() => setShowReportModal(false)}
-                  className="px-4 py-2 rounded-lg text-sm font-medium text-text-muted hover:text-white transition-colors"
-                >
-                  Close
-                </button>
-                <button
-                  onClick={handleDownloadPdf}
-                  disabled={
-                    !reportContent || isGeneratingReport || isDownloadingPdf
-                  }
-                  className={`px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-colors ${
-                    !reportContent || isGeneratingReport || isDownloadingPdf
-                      ? "bg-gray-500/40 text-gray-300 cursor-not-allowed"
-                      : "bg-primary text-black hover:bg-green-400"
-                  }`}
-                >
-                  <span className="material-symbols-outlined text-[18px]">
-                    {isDownloadingPdf ? "sync" : "download"}
-                  </span>
-                  {isDownloadingPdf ? "Preparing..." : "Export PDF"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+function RuntimeRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 rounded-md border border-white/10 bg-black/20 px-3 py-2">
+      <span className="text-slate-500">{label}</span>
+      <span className="max-w-[170px] truncate text-right font-semibold text-slate-200">
+        {value}
+      </span>
     </div>
   );
 }

@@ -5,6 +5,8 @@ const envSchema = z.object({
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: z.string().optional(),
   CLERK_SECRET_KEY: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
+  POWERGRID_API_BASE_URL: z.string().url().optional(),
+  NEXT_PUBLIC_API_BASE_URL: z.string().url().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -18,6 +20,8 @@ const fallbackEnv: z.infer<typeof envSchema> = {
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: undefined,
   CLERK_SECRET_KEY: undefined,
   GEMINI_API_KEY: undefined,
+  POWERGRID_API_BASE_URL: undefined,
+  NEXT_PUBLIC_API_BASE_URL: undefined,
 };
 
 export const env = parsed.success

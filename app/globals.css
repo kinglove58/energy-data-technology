@@ -50,13 +50,13 @@
 body {
   @apply text-slate-900 dark:text-white overflow-x-hidden;
   font-family: 'Inter', sans-serif;
-  background-color: #dcfce7; /* tailwind green-100 */
-  background-image: linear-gradient(to bottom right, #dcfce7, #22c55e); /* green-100 → green-500 */
+  background-color: #0b1110;
+  background-image: none;
 }
 
 .dark body {
-  background-color: #0f1b14; /* deep green */
-  background-image: linear-gradient(to bottom right, #0f1b14, #166534); /* dark green gradient */
+  background-color: #0b1110;
+  background-image: none;
 }
 
 .material-symbols-outlined {
@@ -195,5 +195,47 @@ body {
   }
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+@layer base {
+  :root {
+    --background: 150 24% 96%;
+    --foreground: 155 14% 16%;
+    --card: 150 24% 98%;
+    --card-foreground: 155 14% 16%;
+    --popover: 150 24% 98%;
+    --popover-foreground: 155 14% 16%;
+    --primary: 137 79% 51%;
+    --primary-foreground: 150 24% 8%;
+    --secondary: 149 14% 90%;
+    --secondary-foreground: 155 14% 16%;
+    --muted: 150 14% 88%;
+    --muted-foreground: 155 10% 40%;
+    --accent: 137 79% 51%;
+    --accent-foreground: 150 24% 8%;
+    --border: 152 16% 80%;
+    --input: 152 16% 80%;
+    --ring: 137 79% 51%;
+  }
+
+  .dark {
+    --background: 164 24% 5%;
+    --foreground: 152 12% 88%;
+    --card: 152 34% 10%;
+    --card-foreground: 152 12% 88%;
+    --popover: 152 34% 10%;
+    --popover-foreground: 152 12% 88%;
+    --primary: 137 79% 51%;
+    --primary-foreground: 152 14% 12%;
+    --secondary: 144 26% 16%;
+    --secondary-foreground: 152 12% 85%;
+    --muted: 144 26% 17%;
+    --muted-foreground: 152 12% 60%;
+    --accent: 144 26% 17%;
+    --accent-foreground: 152 12% 88%;
+    --border: 144 26% 24%;
+    --input: 144 26% 24%;
+    --ring: 137 79% 51%;
   }
 }

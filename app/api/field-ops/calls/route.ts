@@ -32,7 +32,7 @@ const ensureEnv = () => {
 };
 
 export async function POST(req: Request) {
-  const { userId } = auth();
+  const { userId } = await auth();
   if (!userId) {
     return fail('Unauthorized', 401);
   }

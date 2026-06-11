@@ -23,7 +23,7 @@ const bodySchema = z.object({
 });
 
 async function handleInsights(req: Request, input?: { range?: string; metrics?: z.infer<typeof metricsSchema> }) {
-  const { userId } = auth();
+  const { userId } = await auth();
   if (!userId) {
     return fail('Unauthorized', 401);
   }

@@ -1,0 +1,83 @@
+export type ModelInferenceDetails = {
+  model_name: string;
+  model_version: string | null;
+  artifact_path: string | null;
+  artifact_available: boolean;
+  runtime_ready: boolean;
+  availability_reason: string | null;
+  inference_strategy: string;
+  threshold: number;
+  input_channels: number | null;
+  score_source: string | null;
+  blend_weights: Record<string, number> | null;
+};
+
+export type BypassingHousehold = {
+  customer_id: string | null;
+  service_point_id: string | null;
+  node_id: string | null;
+  transformer_id: string | null;
+  feeder_id: string | null;
+  region: string | null;
+  zone: string | null;
+  house_number: string | null;
+  address: string | null;
+  gps_lat: number | null;
+  gps_lon: number | null;
+  inspection_result: string | null;
+  connection_type: string | null;
+  customer_category: string | null;
+  meter_type: string | null;
+  recovery_amount: number | null;
+  estimated_loss_kwh: number | null;
+  risk_score: number;
+  heuristic_risk_score: number;
+  model_risk_score: number | null;
+  predicted_meter_bypass: boolean;
+  score_source: string;
+  metadata: Record<string, unknown>;
+};
+
+export type LiveGroupAnalysisResult = {
+  job_id: string;
+  analyzed_at: string;
+  asset_level: string;
+  asset_id: string;
+  region: string | null;
+  zone: string | null;
+  feeder_id: string | null;
+  transformer_id: string | null;
+  customer_id: string | null;
+  service_point_id: string | null;
+  event_count: number;
+  first_observed_at: string | null;
+  last_observed_at: string | null;
+  total_power_delivered_kwh: number;
+  total_energy_consumed_kwh: number;
+  total_loss_estimate_kwh: number;
+  theft_risk_score: number;
+  heuristic_risk_score: number;
+  model_risk_score: number | null;
+  anomaly_detected: boolean;
+  predicted_meter_bypass: boolean;
+  confidence_score: number;
+  loss_ratio: number;
+  score_source: string;
+  bypassing_household_count: number;
+  bypassing_households: BypassingHousehold[];
+  customer_details: Record<string, unknown>;
+  node_context: Record<string, string | null>;
+  model_details: ModelInferenceDetails;
+  source_live_db: string;
+  source_collection: string;
+  result_db: string;
+  result_collection: string;
+};
+
+export type LiveAnalysisResultsResponse = {
+  job_id: string;
+  result_db: string;
+  result_collection: string;
+  result_count: number;
+  results: LiveGroupAnalysisResult[];
+};
