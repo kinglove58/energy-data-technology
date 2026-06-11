@@ -13,9 +13,13 @@ const clerkConfigured = Boolean(
 );
 
 const withClerk = clerkMiddleware(async (auth, req) => {
+  if (!isProtectedRoute(req)) {
+    return NextResponse.next();
+  }
+
   const { userId } = await auth();
 
-  if (!userId && isProtectedRoute(req)) {
+  if (!userId) {
     const { redirectToSignIn } = await auth();
     return redirectToSignIn();
   }
