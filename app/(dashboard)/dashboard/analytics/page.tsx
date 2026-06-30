@@ -34,6 +34,7 @@ export default function AnalyticsPage() {
   const monitoring = usePowergridMonitoringStatus(false);
   const submitJob = useSubmitLiveAnalysisJob();
   const [jobId, setJobId] = useState<string | null>(null);
+  const [jobMessage, setJobMessage] = useState<string | null>(null);
   const [reportState, setReportState] = useState("Ready");
   const job = useLiveAnalysisJob(jobId);
 
@@ -47,6 +48,12 @@ export default function AnalyticsPage() {
     [latest.data]
   );
   const cases = useMemo(() => buildTheftCases(latest.data, 12), [latest.data]);
+  const latestErrorMessage =
+    latest.error instanceof Error
+      ? latest.error.message
+      : latest.isError
+        ? "Unable to load latest grouped-analysis results."
+        : null;
 
   useEffect(() => {
     if (job.data?.completed) {
@@ -56,11 +63,21 @@ export default function AnalyticsPage() {
   }, [job.data?.completed, queryClient]);
 
   const handleRunAnalysis = async () => {
-    const response = await submitJob.mutateAsync({
-      persist_results: true,
-      generate_if_empty: true,
-    });
-    setJobId(response.job_id);
+    setJobMessage("Submitting live grouped-analysis job.");
+    try {
+      const response = await submitJob.mutateAsync({
+        persist_results: true,
+        generate_if_empty: true,
+      });
+      setJobId(response.job_id);
+      setJobMessage("Live grouped-analysis job queued.");
+    } catch (error) {
+      setJobMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to submit live grouped-analysis job."
+      );
+    }
   };
 
   const handleGenerateReport = async () => {
@@ -125,7 +142,11 @@ export default function AnalyticsPage() {
             </button>
             <button
               onClick={handleGenerateReport}
-              disabled={reportState === "Generating" || !latest.data}
+              disabled={
+                reportState === "Generating" ||
+                !latest.data ||
+                summary.resultCount === 0
+              }
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-black transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
             >
               <span className="material-symbols-outlined text-lg">download</span>
@@ -140,6 +161,18 @@ export default function AnalyticsPage() {
             <span className="font-bold text-primary">
               {job.data?.status ?? "POLLING"}
             </span>
+          </div>
+        )}
+
+        {(latestErrorMessage || jobMessage) && (
+          <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+            {latestErrorMessage ? (
+              <p>
+                Latest grouped-analysis unavailable:{" "}
+                <span className="font-semibold">{latestErrorMessage}</span>
+              </p>
+            ) : null}
+            {jobMessage ? <p>{jobMessage}</p> : null}
           </div>
         )}
 
