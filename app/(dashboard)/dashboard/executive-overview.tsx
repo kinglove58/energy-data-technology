@@ -23,6 +23,10 @@ import {
   WalletCards,
 } from "lucide-react";
 import { fetchInsights } from "@/services/insights";
+import {
+  isPreviewPowergridPayload,
+  POWERGRID_PREVIEW_MESSAGE,
+} from "@/lib/powergridPreviewData";
 import { useLatestLiveResults } from "@/services/powergridHooks";
 import { downloadReportPdf, generateReport } from "@/services/reports";
 import type { Insight } from "@/types/ai";
@@ -56,6 +60,19 @@ const FALLBACK_INSIGHTS: Insight[] = [
     type: "Trend",
     text: "Once `/analysis/live/results/latest` returns data, this panel will summarize the latest risk drivers.",
     action: null,
+  },
+];
+
+const PREVIEW_INSIGHTS: Insight[] = [
+  {
+    type: "Trend",
+    text: "Preview rows are visible while the backend latest-results endpoint finishes loading.",
+    action: "Real grouped-analysis results will replace this preview automatically.",
+  },
+  {
+    type: "Alert",
+    text: "The deployed backend is reachable, but latest live analysis is not returning fast enough yet.",
+    action: "Refresh after the backend worker or snapshot fallback is deployed.",
   },
 ];
 
@@ -349,6 +366,7 @@ export default function ExecutiveOverview() {
   const topCases = useMemo(() => getTopCases(results), [results]);
   const modelDetails = useMemo(() => getModelDetails(results), [results]);
   const latestAnalyzedAt = useMemo(() => getLatestAnalyzedAt(results), [results]);
+  const showingPreview = isPreviewPowergridPayload(payload);
 
   const loadResults = () => {
     setState("loading");
@@ -357,6 +375,17 @@ export default function ExecutiveOverview() {
   };
 
   useEffect(() => {
+    if (latestQuery.data && latestQuery.data.result_count > 0) {
+      setPayload(latestQuery.data);
+      setState("ready");
+      setMessage(
+        isPreviewPowergridPayload(latestQuery.data)
+          ? POWERGRID_PREVIEW_MESSAGE
+          : "Latest grouped-analysis results loaded."
+      );
+      return;
+    }
+
     if (latestQuery.isLoading) {
       setState("loading");
       setMessage("Connecting to the Powergrid API.");
@@ -374,13 +403,6 @@ export default function ExecutiveOverview() {
       return;
     }
 
-    if (latestQuery.data && latestQuery.data.result_count > 0) {
-      setPayload(latestQuery.data);
-      setState("ready");
-      setMessage("Latest grouped-analysis results loaded.");
-      return;
-    }
-
     setPayload(null);
     setState("empty");
     setMessage("No stored grouped-analysis results found yet.");
@@ -393,6 +415,11 @@ export default function ExecutiveOverview() {
 
   useEffect(() => {
     if (state !== "ready" || !payload) return;
+
+    if (isPreviewPowergridPayload(payload)) {
+      setInsights(PREVIEW_INSIGHTS);
+      return;
+    }
 
     async function loadInsights() {
       setIsLoadingInsights(true);
@@ -482,7 +509,10 @@ export default function ExecutiveOverview() {
         <header className="flex flex-col gap-4 border-b border-white/10 pb-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <StatusPill label="Live API" tone="normal" />
+              <StatusPill
+                label={showingPreview ? "Preview data" : "Live API"}
+                tone={showingPreview ? "medium" : "normal"}
+              />
               <StatusPill
                 label={modelDetails?.artifact_available ? "Model artifact" : "Heuristic fallback"}
                 tone={modelDetails?.artifact_available ? "normal" : "medium"}
@@ -514,6 +544,12 @@ export default function ExecutiveOverview() {
             </button>
           </div>
         </header>
+
+        {showingPreview && (
+          <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+            {message}
+          </div>
+        )}
 
         <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
           <KpiCard

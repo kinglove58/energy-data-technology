@@ -26,6 +26,11 @@ import {
   formatPercent,
   summarizeLiveResults,
 } from "@/lib/powergridAnalytics";
+import {
+  isPreviewPowergridPayload,
+  POWERGRID_PREVIEW_MESSAGE,
+  POWERGRID_PREVIEW_RESULTS,
+} from "@/lib/powergridPreviewData";
 import { downloadReportPdf, generateReport } from "@/services/reports";
 
 export default function AnalyticsPage() {
@@ -37,17 +42,19 @@ export default function AnalyticsPage() {
   const [jobMessage, setJobMessage] = useState<string | null>(null);
   const [reportState, setReportState] = useState("Ready");
   const job = useLiveAnalysisJob(jobId);
+  const liveData = latest.data ?? POWERGRID_PREVIEW_RESULTS;
+  const showingPreview = isPreviewPowergridPayload(liveData);
 
-  const summary = useMemo(() => summarizeLiveResults(latest.data), [latest.data]);
+  const summary = useMemo(() => summarizeLiveResults(liveData), [liveData]);
   const topFeeders = useMemo(
-    () => aggregateAssets(latest.data, "feeder", 10),
-    [latest.data]
+    () => aggregateAssets(liveData, "feeder", 10),
+    [liveData]
   );
   const topTransformers = useMemo(
-    () => aggregateAssets(latest.data, "transformer", 8),
-    [latest.data]
+    () => aggregateAssets(liveData, "transformer", 8),
+    [liveData]
   );
-  const cases = useMemo(() => buildTheftCases(latest.data, 12), [latest.data]);
+  const cases = useMemo(() => buildTheftCases(liveData, 12), [liveData]);
   const latestErrorMessage =
     latest.error instanceof Error
       ? latest.error.message
@@ -144,7 +151,6 @@ export default function AnalyticsPage() {
               onClick={handleGenerateReport}
               disabled={
                 reportState === "Generating" ||
-                !latest.data ||
                 summary.resultCount === 0
               }
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-black transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
@@ -173,6 +179,12 @@ export default function AnalyticsPage() {
               </p>
             ) : null}
             {jobMessage ? <p>{jobMessage}</p> : null}
+          </div>
+        )}
+
+        {showingPreview && (
+          <div className="rounded-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+            {POWERGRID_PREVIEW_MESSAGE}
           </div>
         )}
 

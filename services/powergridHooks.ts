@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { POWERGRID_PREVIEW_RESULTS } from "@/lib/powergridPreviewData";
 import {
   fetchDatasetCatalog,
   fetchLatestLiveResults,
@@ -30,6 +31,8 @@ export function useLatestLiveResults() {
   return useQuery({
     queryKey: powergridKeys.latestResults(),
     queryFn: () => requirePowergridData(fetchLatestLiveResults()),
+    initialData: POWERGRID_PREVIEW_RESULTS,
+    initialDataUpdatedAt: 0,
     refetchInterval: 60_000,
   });
 }
