@@ -42,7 +42,7 @@ type DashboardSummary = {
   consumedKwh: number;
   lossKwh: number;
   lossRatio: number;
-  flaggedConsumers: number;
+  bypassFlags: number;
   highRiskConsumers: number;
   averageRisk: number;
   averageConfidence: number;
@@ -132,6 +132,19 @@ function averageBy(
   );
 }
 
+function countBypassFlags(results: LiveGroupAnalysisResult[]) {
+  return results.reduce((sum, result) => {
+    const confirmedCount = Math.max(
+      Number(result.bypassing_household_count || 0),
+      result.bypassing_households?.length ?? 0
+    );
+
+    if (confirmedCount > 0) return sum + confirmedCount;
+    if (result.predicted_meter_bypass || result.anomaly_detected) return sum + 1;
+    return sum;
+  }, 0);
+}
+
 function summarizeResults(
   payload: LiveAnalysisResultsResponse | null
 ): DashboardSummary {
@@ -143,9 +156,7 @@ function summarizeResults(
   const deliveredKwh = sumBy(aggregate.results, "total_power_delivered_kwh");
   const consumedKwh = sumBy(aggregate.results, "total_energy_consumed_kwh");
   const lossKwh = sumBy(aggregate.results, "total_loss_estimate_kwh");
-  const flaggedConsumers = consumerResults.filter(
-    (result) => result.predicted_meter_bypass || result.anomaly_detected
-  ).length;
+  const bypassFlags = countBypassFlags(consumerResults);
   const highRiskConsumers = consumerResults.filter(
     (result) => Number(result.theft_risk_score || 0) >= 0.7
   ).length;
@@ -155,7 +166,7 @@ function summarizeResults(
     consumedKwh,
     lossKwh,
     lossRatio: deliveredKwh > 0 ? lossKwh / deliveredKwh : 0,
-    flaggedConsumers,
+    bypassFlags,
     highRiskConsumers,
     averageRisk: averageBy(consumerResults.length ? consumerResults : allResults, "theft_risk_score"),
     averageConfidence: averageBy(allResults, "confidence_score"),
@@ -181,6 +192,35 @@ function formatMoneyFromLoss(kwh: number) {
   if (estimatedUsd >= 1_000_000) return `$${(estimatedUsd / 1_000_000).toFixed(2)}M`;
   if (estimatedUsd >= 1_000) return `$${(estimatedUsd / 1_000).toFixed(1)}k`;
   return `$${estimatedUsd.toFixed(0)}`;
+}
+
+function buildMetricInsights(
+  summary: DashboardSummary,
+  modelDetails: LiveGroupAnalysisResult["model_details"] | null
+): Insight[] {
+  const exposure = formatMoneyFromLoss(summary.lossKwh);
+  const lossRate = formatPercent(summary.lossRatio);
+
+  return [
+    {
+      type: summary.bypassFlags > 0 ? "Alert" : "Trend",
+      text:
+        summary.bypassFlags > 0
+          ? `${summary.bypassFlags.toLocaleString()} bypass household flags are present in the latest live batch.`
+          : "No confirmed bypass household flags are present in the latest live batch.",
+      action:
+        summary.bypassFlags > 0
+          ? "Prioritize the highest-loss service points in the field operations queue."
+          : "Continue monitoring the next live grouped-analysis cycle.",
+    },
+    {
+      type: "Trend",
+      text: `Estimated loss is ${formatEnergy(summary.lossKwh)} (${lossRate} of delivered energy), with ${exposure} in revenue exposure.`,
+      action: modelDetails?.runtime_ready
+        ? `Inference is using ${modelDetails.inference_strategy}.`
+        : "Model runtime is using the available fallback strategy.",
+    },
+  ];
 }
 
 function formatDateTime(value: string | null | undefined) {
@@ -269,9 +309,11 @@ function KpiCard({
           <p className="text-xs font-semibold uppercase text-slate-400">
             {title}
           </p>
-          <p className="mt-2 truncate text-2xl font-bold text-white">{value}</p>
+          <p className="mt-2 break-words text-2xl font-bold leading-tight text-white">
+            {value}
+          </p>
         </div>
-        <div className="rounded-md border border-white/10 bg-black/20 p-2">
+        <div className="shrink-0 rounded-md border border-white/10 bg-black/20 p-2">
           <Icon className="h-5 w-5" />
         </div>
       </div>
@@ -367,6 +409,10 @@ export default function ExecutiveOverview() {
   const modelDetails = useMemo(() => getModelDetails(results), [results]);
   const latestAnalyzedAt = useMemo(() => getLatestAnalyzedAt(results), [results]);
   const showingPreview = isPreviewPowergridPayload(payload);
+  const metricInsights = useMemo(
+    () => buildMetricInsights(summary, modelDetails),
+    [modelDetails, summary]
+  );
 
   const loadResults = () => {
     setState("loading");
@@ -421,6 +467,8 @@ export default function ExecutiveOverview() {
       return;
     }
 
+    setInsights(metricInsights);
+
     async function loadInsights() {
       setIsLoadingInsights(true);
       try {
@@ -429,21 +477,21 @@ export default function ExecutiveOverview() {
             energySuppliedMWh: Number((summary.deliveredKwh / 1_000).toFixed(2)),
             energyBilledMWh: Number((summary.consumedKwh / 1_000).toFixed(2)),
             revenueLossUSD: Number((summary.lossKwh * 0.16).toFixed(0)),
-            theftCases: summary.flaggedConsumers,
+            theftCases: summary.bypassFlags,
             recoveryUSD: 0,
             period: "Latest live batch",
           },
         });
-        setInsights(response.success && response.data ? response.data : FALLBACK_INSIGHTS);
+        setInsights(response.success && response.data ? response.data : metricInsights);
       } catch {
-        setInsights(FALLBACK_INSIGHTS);
+        setInsights(metricInsights);
       } finally {
         setIsLoadingInsights(false);
       }
     }
 
     loadInsights();
-  }, [payload, state, summary.consumedKwh, summary.deliveredKwh, summary.flaggedConsumers, summary.lossKwh]);
+  }, [metricInsights, payload, state, summary.bypassFlags, summary.consumedKwh, summary.deliveredKwh, summary.lossKwh]);
 
   const handleGenerateFullReport = async () => {
     setShowReportModal(true);
@@ -460,7 +508,7 @@ export default function ExecutiveOverview() {
           consumedKwh: summary.consumedKwh,
           lossKwh: summary.lossKwh,
           lossRatio: summary.lossRatio,
-          flaggedConsumers: summary.flaggedConsumers,
+          flaggedConsumers: summary.bypassFlags,
           highRiskConsumers: summary.highRiskConsumers,
           averageRisk: summary.averageRisk,
           modelStrategy: modelDetails?.inference_strategy,
@@ -551,7 +599,7 @@ export default function ExecutiveOverview() {
           </div>
         )}
 
-        <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <section className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
           <KpiCard
             title="Delivered"
             value={formatEnergy(summary.deliveredKwh)}
@@ -582,8 +630,8 @@ export default function ExecutiveOverview() {
           />
           <KpiCard
             title="Bypass Flags"
-            value={summary.flaggedConsumers.toLocaleString()}
-            detail={`${summary.highRiskConsumers.toLocaleString()} high-risk consumers`}
+            value={summary.bypassFlags.toLocaleString()}
+            detail={`${summary.highRiskConsumers.toLocaleString()} consumers above 70% risk`}
             icon={AlertTriangle}
             tone="risk"
           />

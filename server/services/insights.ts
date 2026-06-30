@@ -3,27 +3,47 @@ import { env } from "@/config/env";
 import type { Insight, InsightInput } from "@/types/ai";
 import { getGenAIClient } from "../clients/genai";
 
-const fallbackInsights: Insight[] = [
-  {
-    type: "Alert",
-    text: "15% drop in billing efficiency detected in North District over last 48h.",
-    action: "View",
-  },
-  {
-    type: "Anomaly",
-    text: "Transformer T-409 load mismatch suggests meter bypass.",
-    action: "Investigate",
-  },
-  {
-    type: "Trend",
-    text: "Recovery trend in South Zone exceeds forecast by 8%.",
-    action: null,
-  },
-];
+function formatMoney(value: number) {
+  if (!Number.isFinite(value)) return "$0";
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}k`;
+  return `$${value.toFixed(0)}`;
+}
+
+function buildFallbackInsights(input?: InsightInput): Insight[] {
+  const metrics = input?.metrics ?? {};
+  const supplied = metrics.energySuppliedMWh ?? 0;
+  const billed = metrics.energyBilledMWh ?? 0;
+  const lossMWh = Math.max(supplied - billed, 0);
+  const lossRate = supplied > 0 ? (lossMWh / supplied) * 100 : 0;
+  const theftCases = metrics.theftCases ?? 0;
+  const exposure = formatMoney(metrics.revenueLossUSD ?? 0);
+
+  return [
+    {
+      type: theftCases > 0 ? "Alert" : "Trend",
+      text:
+        theftCases > 0
+          ? `${theftCases.toLocaleString()} bypass flags need field validation in the latest batch.`
+          : "No bypass flags are present in the latest batch.",
+      action: theftCases > 0 ? "Dispatch field review" : "Keep monitoring",
+    },
+    {
+      type: "Trend",
+      text: `Latest loss is ${lossMWh.toFixed(2)} MWh, about ${lossRate.toFixed(1)}% of supplied energy.`,
+      action: "Review loss ranking",
+    },
+    {
+      type: "Anomaly",
+      text: `Estimated revenue exposure is ${exposure} for the current analysis window.`,
+      action: "Export executive report",
+    },
+  ];
+}
 
 export async function getInsights(input?: InsightInput): Promise<Insight[]> {
   if (!("GEMINI_API_KEY" in env) || !env.GEMINI_API_KEY) {
-    return fallbackInsights;
+    return buildFallbackInsights(input);
   }
 
   try {
@@ -54,5 +74,5 @@ export async function getInsights(input?: InsightInput): Promise<Insight[]> {
     logError("getInsights", error);
   }
 
-  return fallbackInsights;
+  return buildFallbackInsights(input);
 }

@@ -123,9 +123,23 @@ export function summarizeLiveResults(
 ): PowergridSummary {
   const results = data?.results ?? [];
   const consumers = results.filter((result) => result.asset_level === "consumer");
-  const bypassCaseCount = consumers.filter(
-    (result) => result.predicted_meter_bypass || result.theft_risk_score >= 0.6
-  ).length;
+  const bypassCaseCount = consumers.reduce((sum, result) => {
+    const confirmedCount = Math.max(
+      Number(result.bypassing_household_count || 0),
+      result.bypassing_households?.length ?? 0
+    );
+
+    if (confirmedCount > 0) return sum + confirmedCount;
+    if (
+      result.predicted_meter_bypass ||
+      result.anomaly_detected ||
+      result.theft_risk_score >= 0.6
+    ) {
+      return sum + 1;
+    }
+
+    return sum;
+  }, 0);
   const riskTotal = consumers.reduce(
     (sum, result) => sum + result.theft_risk_score,
     0
